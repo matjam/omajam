@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "id": "matjam.omajam",
+  "name": "omajam",
+  "version": "0.1.0",
+  "author": "Nathan Ollerenshaw (matjam)",
+  "description": "A full MPD client for the Omarchy bar. The queue, the library, stored playlists and search in one keyboard-driven window styled after rmpc, with what is playing in the bar beside it. Talks the MPD protocol directly over TCP or a unix socket, so state arrives as the server pushes it rather than on a poll.",
+  "license": "MIT",
+  "homepage": "https://github.com/matjam/omajam",
+  "repository": "https://github.com/matjam/omajam",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "MPD",
+    "description": "Now playing from MPD, with transport controls and cover art. Click it for the full client: queue, library browser, playlists and search, with rmpc's keybindings.",
+    "category": "Media",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "host": "",
+      "port": 6600,
+      "password": "",
+      "format": "[%artist% - ][%title%|%filename%]",
+      "maxWidth": 240,
+      "overflow": "scroll",
+      "showControls": true,
+      "controlsPosition": "right",
+      "showStop": false,
+      "showStateIcon": true,
+      "showArt": false,
+      "showSettingsButton": true,
+      "whenIdle": "icon",
+      "wheelAction": "volume"
+    },
+    "schema": [
+      {
+        "key": "host",
+        "type": "string",
+        "label": "MPD host",
+        "defaultValue": "",
+        "description": "Hostname or IP. A path or an @name is a unix socket. Empty follows $MPD_HOST, then 127.0.0.1."
+      },
+      {
+        "key": "port",
+        "type": "integer",
+        "label": "MPD port",
+        "min": 1,
+        "max": 65535,
+        "step": 1,
+        "defaultValue": 6600,
+        "description": "Ignored when the host is a unix socket."
+      },
+      {
+        "key": "password",
+        "type": "string",
+        "label": "MPD password",
+        "defaultValue": "",
+        "description": "Only if the server asks for one. Stored as plain text in shell.json."
+      },
+      {
+        "key": "format",
+        "type": "string",
+        "label": "Label format",
+        "defaultValue": "[%artist% - ][%title%|%filename%]",
+        "description": "%tag% substitutes, [ ] drops the group when a tag inside is missing, [a|b] takes the first that resolves."
+      },
+      {
+        "key": "maxWidth",
+        "type": "integer",
+        "label": "Label width (pixels)",
+        "min": 40,
+        "max": 1200,
+        "step": 20,
+        "defaultValue": 240,
+        "description": "How much room the label may take before it scrolls or elides."
+      },
+      {
+        "key": "overflow",
+        "type": "string",
+        "label": "When the label is too long",
+        "defaultValue": "scroll",
+        "description": "scroll or elide."
+      },
+      {
+        "key": "showControls",
+        "type": "boolean",
+        "label": "Playback controls",
+        "defaultValue": true,
+        "description": "Previous, play/pause and next in the bar."
+      },
+      {
+        "key": "controlsPosition",
+        "type": "string",
+        "label": "Controls placement",
+        "defaultValue": "right",
+        "description": "left puts them before the label, right after it."
+      },
+      {
+        "key": "showStop",
+        "type": "boolean",
+        "label": "Stop button",
+        "defaultValue": false
+      },
+      {
+        "key": "showStateIcon",
+        "type": "boolean",
+        "label": "Play state glyph",
+        "defaultValue": true
+      },
+      {
+        "key": "showArt",
+        "type": "boolean",
+        "label": "Cover thumbnail in the bar",
+        "defaultValue": false,
+        "description": "The hover card always shows the cover; this adds a small one to the bar."
+      },
+      {
+        "key": "showSettingsButton",
+        "type": "boolean",
+        "label": "Settings button",
+        "defaultValue": true,
+        "description": "Off leaves right-click on the label as the way into the panel."
+      },
+      {
+        "key": "whenIdle",
+        "type": "string",
+        "label": "When nothing is playing",
+        "defaultValue": "icon",
+        "description": "icon keeps a glyph in the bar, hide removes the widget entirely."
+      },
+      {
+        "key": "wheelAction",
+        "type": "string",
+        "label": "Scroll wheel",
+        "defaultValue": "volume",
+        "description": "volume, seek, track or none."
+      }
+    ]
+  }
+}

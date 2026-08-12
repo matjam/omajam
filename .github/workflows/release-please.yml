@@ -1,0 +1,33 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+# Least privilege. release-please needs to push its release branch, open the
+# release PR, and cut the tag and GitHub release. Nothing here needs more.
+permissions:
+  contents: write
+  pull-requests: write
+
+# Two pushes in quick succession would otherwise race to update the same
+# release PR. Queue rather than cancel, so the later push is not dropped.
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to a commit SHA, not a tag. Tags are mutable: whoever controls
+      # the upstream repo can retarget `v5` at any commit, and this workflow
+      # would then run it with the write permissions above. A SHA cannot be
+      # retargeted. Dependabot (.github/dependabot.yml) raises a PR when a new
+      # version lands, so the pin stays current without being blindly trusted.
+      #
+      # googleapis/release-please-action v5.0.0
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

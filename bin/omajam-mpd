@@ -1,0 +1,1243 @@
+#!/usr/bin/env python3
+"""Line-oriented bridge between the Omarchy shell and an MPD server.
+
+The shell speaks to this over the child process's stdin/stdout, one JSON
+object per line in each direction. It exists because Quickshell's Socket is a
+QLocalSocket -- unix sockets only -- and MPD is usually reached over TCP.
+Doing it here rather than shelling out to `mpc` per update also means the
+plugin has no package dependency beyond python3, and updates arrive by MPD's
+own `idle` push rather than by polling.
+
+Two connections are held, which is what MPD's protocol asks for: one parked in
+`idle` waiting for the server to say something changed, and one for commands
+and status. Sharing a single connection would mean cancelling the idle with
+`noidle` around every button press and racing the reply against the event.
+
+A third connection answers the client's browsing queries. `find` across a ten
+thousand song library takes long enough to be felt, and it must not be felt on
+the play button, so queries get their own socket and their own worker thread.
+Requests carry a `channel`, and a request superseded by a newer one on the same
+channel is dropped rather than run -- which is what makes typing in the search
+box cost one query rather than one per keystroke.
+
+Album art is fetched on its own short-lived fourth connection, off both paths,
+so a 4MB cover cannot delay a play/pause either.
+
+Input (stdin, one line each):
+    config {"host":..,"port":..,"password":..}   (re)connect with these settings
+    toggle | play | pause | stop | next | prev
+    seek <seconds>            absolute, in the current song
+    volume <0-100>
+    setopt <repeat|random|single|consume> <value>
+    update | rescan           (re)scan the music database
+    refresh                   re-emit state now
+    cmd <json>                one queue/library mutation, see COMMANDS below
+    query <json>              {"id":..,"kind":..,"channel":..,..} -- see QUERIES
+    quit
+
+COMMANDS (the "op" key of `cmd`):
+    playid {id} | playpos {pos} | add {uri} | addplay {uri} | insert {uri}
+    findadd {filter} | findplay {filter}
+    remove {id} | move {from,to} | clear | shuffle | crop
+    loadplaylist {name} | saveplaylist {name} | rmplaylist {name}
+    renameplaylist {name,to} | playlistadd {name,uri}
+
+QUERIES (the "kind" key of `query`):
+    queue                     the play queue, in order
+    lsinfo {path}             one directory of the music tree
+    list {tag,filter}         distinct values of a tag, optionally filtered
+    find {filter,sort}        songs matching an exact-match filter
+    search {term}             songs matching a substring of any tag
+    listplaylists             stored playlists
+    playlist {name}           one stored playlist's songs
+
+Output (stdout, one JSON object per line):
+    {"event":"connected","version":..,"target":..}
+    {"event":"disconnected","error":..,"retryIn":..}
+    {"event":"state","status":{..},"song":{..}}
+    {"event":"art","uri":..,"path":..,"mime":..}
+    {"event":"result","id":..,"kind":..,"channel":..,"rows":[..],"error":..}
+    {"event":"database"}      the library changed; anything showing it is stale
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import socket
+import sys
+import threading
+import time
+
+# Enough for any sane cover. A pathological file should degrade to "no art"
+# rather than to a shell holding tens of megabytes of it.
+ART_LIMIT = 12 * 1024 * 1024
+ART_CACHE_KEEP = 96
+ART_CHUNK = 256 * 1024
+
+CMD_TIMEOUT = 10.0
+CONNECT_TIMEOUT = 5.0
+
+# Floor on the gap between two status reads. A database update or a client
+# dragging the seek bar can fire idle events far faster than anything on a bar
+# can be read, and the refreshes coalesce rather than queue up behind it.
+REFRESH_MIN_GAP = 0.1
+
+# A ceiling on one query's answer. The whole-library queries are the point of
+# the browser, so this is generous; it exists so a pathological database cannot
+# hand the shell a hundred megabytes of JSON on one line.
+QUERY_ROW_LIMIT = 20000
+
+# What travels with a song. MPD volunteers more than this -- Added, sticker
+# counts, the audio format -- and every field costs bytes on a line that can
+# carry ten thousand of them.
+SONG_FIELDS = (
+    "file", "id", "pos", "title", "artist", "albumartist", "album",
+    "track", "disc", "date", "genre", "composer", "performer", "name",
+    "time", "duration", "last-modified",
+)
+
+# The keys that start a new entry in a multi-entry response.
+ENTRY_MARKERS = ("file", "directory", "playlist")
+
+# Subsystems worth waking for. `database` and `update` are included so the
+# panel's rescan button shows progress; `message` and `sticker` are not.
+IDLE_SUBSYSTEMS = ["player", "mixer", "options", "playlist", "update", "database"]
+
+
+class MPDError(Exception):
+    """Connection-level failure. The connection is no longer usable."""
+
+
+class MPDCommandError(MPDError):
+    """An ACK from the server. The connection is fine; the command was not."""
+
+
+ACK_PATTERN = re.compile(r"^\[(\d+)@(\d+)\]\s*\{([^}]*)\}\s*(.*)$")
+
+
+def ack_message(body: str) -> str:
+    """The human half of `ACK [3@0] {password} incorrect password`.
+
+    The panel shows this verbatim, and "incorrect password" is advice while
+    "[3@0] {password} incorrect password" is a protocol dump.
+    """
+    match = ACK_PATTERN.match(body.strip())
+    if not match:
+        return body.strip()
+    text = match.group(4).strip()
+    command = match.group(3).strip()
+    if text and command:
+        return "%s: %s" % (command, text)
+    return text or body.strip()
+
+
+def error_text(exc: BaseException) -> str:
+    """A message for the settings panel rather than for a log.
+
+    OSError stringifies as "[Errno 111] Connection refused"; its strerror is
+    the half a person needs, and the panel is where this ends up.
+    """
+    strerror = getattr(exc, "strerror", None)
+    if strerror:
+        return str(strerror)
+    return str(exc) or exc.__class__.__name__
+
+
+def quote(value) -> str:
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def parse_target(host: str, port) -> tuple:
+    """Resolve the host/port pair into a socket target.
+
+    A leading `/` or `~` means a unix socket, `@` an abstract one -- the same
+    spellings MPD_HOST accepts, so a value copied from a shell profile works
+    here unchanged.
+    """
+    host = (host or "").strip()
+    if host.startswith("~"):
+        host = os.path.expanduser(host)
+    if host.startswith("/"):
+        return ("unix", host)
+    if host.startswith("@"):
+        return ("unix", "\0" + host[1:])
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        port = 6600
+    return ("tcp", host or "127.0.0.1", port)
+
+
+def describe(target: tuple) -> str:
+    if target[0] == "unix":
+        return target[1].replace("\0", "@")
+    return "%s:%d" % (target[1], target[2])
+
+
+class MPDConn:
+    """One MPD connection. Not thread-safe; callers hold a lock or own it."""
+
+    def __init__(self, target: tuple, password: str = ""):
+        self.target = target
+        self.password = password or ""
+        self.sock = None
+        self.fh = None
+        self.version = ""
+
+    def connect(self, timeout: float = CONNECT_TIMEOUT) -> str:
+        if self.target[0] == "unix":
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect(self.target[1])
+        else:
+            sock = socket.create_connection((self.target[1], self.target[2]), timeout)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            # Nagle waits for an ACK before sending a second small packet,
+            # and the peer's delayed ACK waits ~40ms for data to piggyback
+            # on. In a request/response protocol they wait for each other:
+            # album art measured 11 seconds over a local socket with this
+            # left on, and milliseconds with it off.
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.sock = sock
+        self.fh = sock.makefile("rb")
+        greeting = self.readline()
+        if not greeting.startswith("OK MPD "):
+            self.close()
+            raise MPDError("unexpected greeting from server")
+        self.version = greeting[len("OK MPD "):].strip()
+        # Sent before anything else: without it every later command ACKs with
+        # "you don't have permission", which would read as a broken server.
+        if self.password:
+            self.command("password", self.password)
+        return self.version
+
+    def close(self) -> None:
+        for handle in (self.fh, self.sock):
+            try:
+                if handle is not None:
+                    handle.close()
+            except OSError:
+                pass
+        self.fh = None
+        self.sock = None
+
+    def shutdown(self) -> None:
+        """Break a blocking read from another thread."""
+        try:
+            if self.sock is not None:
+                self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def readline(self) -> str:
+        line = self.fh.readline()
+        if not line:
+            raise MPDError("connection closed by server")
+        return line.decode("utf-8", "replace").rstrip("\r\n")
+
+    def send(self, text: str) -> None:
+        try:
+            self.sock.sendall((text + "\n").encode("utf-8"))
+        except OSError as exc:
+            raise MPDError(str(exc)) from exc
+
+    def command(self, name: str, *args) -> tuple:
+        """Run one command. Returns (pairs, binary-or-None)."""
+        self.send(" ".join([name] + [quote(a) for a in args]))
+        return self.read_response()
+
+    def read_response(self) -> tuple:
+        pairs = []
+        binary = None
+        while True:
+            try:
+                line = self.readline()
+            except socket.timeout as exc:
+                raise MPDError("timed out waiting for a reply") from exc
+            except OSError as exc:
+                raise MPDError(str(exc)) from exc
+            if line == "OK":
+                return pairs, binary
+            if line.startswith("ACK "):
+                raise MPDCommandError(ack_message(line[4:]))
+            if ": " not in line:
+                continue
+            key, value = line.split(": ", 1)
+            if key == "binary":
+                count = int(value)
+                if count < 0 or count > ART_LIMIT:
+                    raise MPDError("refusing a %d byte binary chunk" % count)
+                chunk = self.fh.read(count)
+                if chunk is None or len(chunk) != count:
+                    raise MPDError("short binary read")
+                # MPD terminates the chunk with a newline that is not part of
+                # the payload; leaving it would desync every later reply.
+                self.fh.read(1)
+                binary = chunk
+            pairs.append((key, value))
+
+
+def to_dict(pairs) -> dict:
+    """Fold response pairs into a dict, joining repeats.
+
+    A song can carry several Artist or Genre lines. Joining rather than
+    keeping the last one means a collaboration reads as both names.
+    """
+    out = {}
+    for key, value in pairs:
+        key = key.lower()
+        if key in out:
+            if value not in out[key].split(", "):
+                out[key] = out[key] + ", " + value
+        else:
+            out[key] = value
+    return out
+
+
+# --------------------------------------------------------------------- queries
+
+
+def add_field(entry: dict, key: str, value: str) -> None:
+    """Set or extend one field, folding repeats the way to_dict does."""
+    if key in entry:
+        if value not in entry[key].split(", "):
+            entry[key] = entry[key] + ", " + value
+    else:
+        entry[key] = value
+
+
+def split_entries(pairs, markers=ENTRY_MARKERS, fields=None, limit=QUERY_ROW_LIMIT) -> list:
+    """Cut a multi-entry response into one dict per entry.
+
+    MPD answers `playlistinfo` and `lsinfo` as one flat stream of pairs, and
+    the only thing separating two songs is that a second `file` appeared. Folding
+    the lot into a single dict -- which is what to_dict does, and the right
+    answer for `status` -- would lose every entry but the last.
+    """
+    entries = []
+    current = None
+    for key, value in pairs:
+        key = key.lower()
+        if key in markers:
+            if len(entries) >= limit:
+                break
+            current = {"type": key, key: value}
+            entries.append(current)
+        elif current is not None:
+            if fields is None or key in fields:
+                add_field(current, key, value)
+    return entries
+
+
+def tag_values(pairs, tag: str, limit=QUERY_ROW_LIMIT) -> list:
+    """The distinct values from a `list` response, in the order MPD gave them.
+
+    An empty value is a real answer -- it is every song missing that tag -- but
+    it cannot be browsed into or told apart from the others in a list, so it is
+    dropped here rather than shown as a blank row.
+    """
+    tag = tag.lower()
+    out = []
+    for key, value in pairs:
+        if key.lower() == tag and value != "":
+            if len(out) >= limit:
+                break
+            out.append({"type": "value", "value": value})
+    return out
+
+
+def entry_name(entry: dict) -> str:
+    """The path an entry is addressed by, whichever kind it is."""
+    return entry.get(entry.get("type", ""), "")
+
+
+def number(value) -> int:
+    """A track or disc number as MPD spells it: "4", "4/12", or missing.
+
+    Sorting is the only caller, and a number that will not parse should sort
+    with the untagged rather than throw.
+    """
+    text = str(value or "").split("/")[0].strip()
+    try:
+        return int(text)
+    except ValueError:
+        return 0
+
+
+def quote_filter_value(value) -> str:
+    """Escape a value for the inside of MPD's filter expression quoting.
+
+    Two layers of escaping stack here: this one, for the `'...'` the filter
+    parser sees, and the protocol's own quoting applied by `quote()` on the way
+    out. Applying them in this order is what makes an apostrophe in a band name
+    arrive intact.
+    """
+    return str(value).replace("\\", "\\\\").replace("'", "\\'")
+
+
+def version_at_least(version: str, major: int, minor: int) -> bool:
+    parts = (version or "").split(".")
+    try:
+        return (int(parts[0]), int(parts[1])) >= (major, minor)
+    except (IndexError, ValueError):
+        return False
+
+
+# ------------------------------------------------------------------- album art
+
+
+def art_key(song: dict) -> str:
+    """Identity of the artwork, not of the song.
+
+    Keyed on the song's directory plus album so every track of an album shares
+    one cache entry -- which is what `albumart` returns anyway. The album tag
+    is in there because two albums can sit in one directory.
+    """
+    uri = song.get("file", "")
+    directory = uri.rsplit("/", 1)[0] if "/" in uri else ""
+    parts = [directory, song.get("album", ""), song.get("albumartist", "")]
+    if not directory:
+        parts.append(uri)
+    return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()[:20]
+
+
+def cache_dir() -> str:
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    path = os.path.join(base, "omajam")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def extension_for(data: bytes, mime: str) -> str:
+    if data[:2] == b"\xff\xd8":
+        return ".jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    mime = (mime or "").lower()
+    for needle, ext in (("jpeg", ".jpg"), ("png", ".png"), ("webp", ".webp")):
+        if needle in mime:
+            return ext
+    return ".img"
+
+
+def cached_art(key: str) -> str:
+    directory = cache_dir()
+    try:
+        for name in os.listdir(directory):
+            if name.startswith(key + "."):
+                return os.path.join(directory, name)
+    except OSError:
+        pass
+    return ""
+
+
+def prune_cache() -> None:
+    directory = cache_dir()
+    try:
+        entries = [os.path.join(directory, n) for n in os.listdir(directory)]
+        if len(entries) <= ART_CACHE_KEEP:
+            return
+        entries.sort(key=lambda p: os.path.getmtime(p))
+        for path in entries[: len(entries) - ART_CACHE_KEEP]:
+            os.unlink(path)
+    except OSError:
+        pass
+
+
+def fetch_binary(conn: MPDConn, command: str, uri: str) -> tuple:
+    """Pull one of MPD's chunked binary responses in full."""
+    data = bytearray()
+    mime = ""
+    size = None
+    while True:
+        pairs, chunk = conn.command(command, uri, len(data))
+        fields = to_dict(pairs)
+        if "size" in fields:
+            try:
+                size = int(fields["size"])
+            except ValueError:
+                size = None
+        if "type" in fields:
+            mime = fields["type"]
+        if not chunk:
+            break
+        data += chunk
+        if len(data) > ART_LIMIT:
+            raise MPDError("album art larger than %d bytes" % ART_LIMIT)
+        if size is not None and len(data) >= size:
+            break
+    return bytes(data), mime
+
+
+def fetch_art(conn: MPDConn, uri: str) -> tuple:
+    """`albumart` first, then `readpicture`.
+
+    albumart returns the cover file sitting beside the song, which is normally
+    the larger of the two; readpicture returns whatever is embedded in the tags
+    and is the fallback for a library that keeps no cover files. Either can ACK
+    with "no such file" and that is not an error worth reporting.
+    """
+    for command in ("albumart", "readpicture"):
+        try:
+            data, mime = fetch_binary(conn, command, uri)
+        except MPDCommandError:
+            continue
+        if data:
+            return data, mime
+    return b"", ""
+
+
+# ----------------------------------------------------------------- the bridge
+
+
+class Bridge:
+    def __init__(self):
+        self.out_lock = threading.Lock()
+        self.cmd_lock = threading.Lock()
+
+        self.target = parse_target("", 6600)
+        self.password = ""
+        self.generation = 0  # bumped on every config change, retires old threads
+
+        self.cmd = None
+        self.idle = None
+        self.connected = False
+
+        self.art_uri = ""       # what the art thread is fetching or last fetched
+        self.art_sent = None    # last (uri, path) announced, to stay quiet on repeats
+        self.art_lock = threading.Lock()
+
+        self.query_conn = None
+        self.query_cv = threading.Condition()
+        self.query_pending = []
+
+        self.refresh_lock = threading.Lock()
+        self.refreshing = False
+        self.refresh_again = False
+        self.last_state = None  # skip re-announcing a state nothing changed in
+
+        self.stop = threading.Event()
+        self.wake = threading.Event()
+
+    # ------------------------------------------------------------- output
+
+    def emit(self, payload: dict) -> None:
+        line = json.dumps(payload, ensure_ascii=False)
+        with self.out_lock:
+            try:
+                sys.stdout.write(line + "\n")
+                sys.stdout.flush()
+            except (BrokenPipeError, ValueError):
+                # The shell went away. Nothing left to talk to.
+                self.stop.set()
+
+    # -------------------------------------------------------- connection
+
+    def apply_config(self, payload: dict) -> None:
+        host = str(payload.get("host", "") or "").strip()
+        port = payload.get("port", 6600)
+        password = str(payload.get("password", "") or "")
+
+        # An empty host means "wherever the rest of this user's MPD clients
+        # look", which is MPD_HOST -- including its `password@host` spelling
+        # and its unix socket paths. Only then; an explicit host in the panel
+        # is a decision and should not be quietly overridden by a shell
+        # profile the shell happened to inherit.
+        if not host:
+            env_host = (os.environ.get("MPD_HOST") or "").strip()
+            if "@" in env_host and not env_host.startswith("@"):
+                env_password, _, env_host = env_host.partition("@")
+                if not password:
+                    password = env_password
+            host = env_host
+            if not payload.get("port"):
+                try:
+                    port = int(os.environ.get("MPD_PORT") or 6600)
+                except ValueError:
+                    port = 6600
+
+        target = parse_target(host, port)
+        if target == self.target and password == self.password and self.connected:
+            return
+        self.target = target
+        self.password = password
+        self.generation += 1
+        self.drop("settings changed")
+        self.wake.set()
+
+    def drop(self, reason: str) -> None:
+        """Tear the connections down. The manager loop reconnects."""
+        with self.cmd_lock:
+            if self.cmd is not None:
+                self.cmd.close()
+                self.cmd = None
+        idle = self.idle
+        self.idle = None
+        if idle is not None:
+            idle.shutdown()
+            idle.close()
+        # The query socket is reopened by the next query rather than by the
+        # manager: a shell showing the bar and nothing else should not hold a
+        # third connection open for a browser nobody opened.
+        with self.query_cv:
+            query = self.query_conn
+            self.query_conn = None
+            self.query_pending = []
+        if query is not None:
+            query.shutdown()
+            query.close()
+        # Both are "what the shell already knows" caches, and after a
+        # reconnection it knows nothing -- it has been showing a disconnected
+        # widget. Clearing them makes the first refresh speak up.
+        self.last_state = None
+        self.art_sent = None
+        if self.connected:
+            self.connected = False
+            self.emit({"event": "disconnected", "error": reason})
+
+    def manager(self) -> None:
+        """Connect, then sit in `idle` until something changes or breaks."""
+        backoff = 1.0
+        while not self.stop.is_set():
+            generation = self.generation
+            self.wake.clear()
+            try:
+                cmd = MPDConn(self.target, self.password)
+                cmd.connect()
+                cmd.sock.settimeout(CMD_TIMEOUT)
+                idle = MPDConn(self.target, self.password)
+                idle.connect()
+                # No timeout on the idle connection: it is meant to sit there
+                # for hours. A dead peer surfaces as a closed socket, which
+                # readline reports, and TCP keepalive backs that up.
+                idle.sock.settimeout(None)
+            except (MPDError, OSError) as exc:
+                if generation == self.generation:
+                    self.emit({
+                        "event": "disconnected",
+                        "error": error_text(exc),
+                        "target": describe(self.target),
+                        "retryIn": backoff,
+                    })
+                self.wake.wait(backoff)
+                # New settings deserve a fresh try rather than inheriting the
+                # patience earned by the address the user just gave up on.
+                backoff = 1.0 if generation != self.generation else min(15.0, backoff * 2)
+                continue
+
+            backoff = 1.0
+            with self.cmd_lock:
+                self.cmd = cmd
+            self.idle = idle
+            self.connected = True
+            self.emit({
+                "event": "connected",
+                "version": cmd.version,
+                "target": describe(self.target),
+            })
+            self.refresh()
+
+            reason = "connection lost"
+            try:
+                while not self.stop.is_set() and generation == self.generation:
+                    idle.send("idle " + " ".join(IDLE_SUBSYSTEMS))
+                    pairs, _ = idle.read_response()
+                    if generation != self.generation:
+                        break
+                    # MPD names the subsystems that woke us. `database` means
+                    # the library itself changed -- songs added, removed or
+                    # retagged -- which is the one thing a browsing client
+                    # cannot infer from anything else it is told. It fires only
+                    # when a scan actually found something, so a rescan that
+                    # changes nothing costs no refetching.
+                    for key, value in pairs:
+                        if key.lower() == "changed" and value == "database":
+                            self.emit({"event": "database"})
+                            break
+                    self.refresh()
+            except (MPDError, OSError) as exc:
+                reason = error_text(exc) or reason
+            finally:
+                idle.close()
+                # A no-op when the drop came from elsewhere -- a settings
+                # change, or with_cmd finding the command socket dead -- since
+                # drop() only announces a connection it still believed in.
+                if generation == self.generation:
+                    self.drop(reason)
+
+    # ----------------------------------------------------------- commands
+
+    def with_cmd(self, fn):
+        """Run fn against the command connection, or return None if it fails.
+
+        A protocol ACK is the command's problem and leaves the connection
+        alone; anything else means the connection is gone, which drops both
+        sockets and lets the manager reconnect.
+        """
+        with self.cmd_lock:
+            conn = self.cmd
+            if conn is None:
+                return None
+            try:
+                return fn(conn)
+            except MPDCommandError as exc:
+                self.emit({"event": "ack", "error": str(exc)})
+                return None
+            except (MPDError, OSError) as exc:
+                self.cmd = None
+                conn.close()
+                error = error_text(exc) or "connection lost"
+                # Unblocks the manager's idle read so it reconnects at once
+                # rather than at the next server-side event.
+                idle = self.idle
+                if idle is not None:
+                    idle.shutdown()
+                self.connected = False
+                self.emit({"event": "disconnected", "error": error})
+                return None
+
+    def refresh(self) -> None:
+        """Read state and announce it, coalescing concurrent callers.
+
+        Both the idle loop and every command ask for a refresh, and during a
+        burst those pile onto the one command connection. A caller arriving
+        while a read is in flight leaves a note instead of queueing: the
+        running read loops once more, so the last word is always current
+        without a request per event.
+        """
+        with self.refresh_lock:
+            if self.refreshing:
+                self.refresh_again = True
+                return
+            self.refreshing = True
+        try:
+            while True:
+                self.refresh_once()
+                with self.refresh_lock:
+                    if not self.refresh_again:
+                        return
+                    self.refresh_again = False
+                time.sleep(REFRESH_MIN_GAP)
+        finally:
+            with self.refresh_lock:
+                self.refreshing = False
+                self.refresh_again = False
+
+    def refresh_once(self) -> None:
+        def run(conn):
+            status = to_dict(conn.command("status")[0])
+            song = to_dict(conn.command("currentsong")[0])
+            return status, song
+
+        result = self.with_cmd(run)
+        if result is None:
+            return
+        status, song = result
+        state = {"event": "state", "status": status, "song": song}
+        if state != self.last_state:
+            self.last_state = state
+            self.emit(state)
+        self.request_art(song)
+
+    def do(self, *command) -> None:
+        self.with_cmd(lambda conn: conn.command(*command))
+        # MPD will announce this through idle anyway, but that round trip is
+        # visible as a lag on the button. Ask now and let the idle event be a
+        # harmless second refresh.
+        self.refresh_soon()
+
+    def refresh_soon(self) -> None:
+        threading.Thread(target=self.refresh, daemon=True).start()
+
+    def toggle(self) -> None:
+        def run(conn):
+            state = to_dict(conn.command("status")[0]).get("state", "stop")
+            if state == "play":
+                conn.command("pause", 1)
+            elif state == "pause":
+                conn.command("pause", 0)
+            else:
+                # `play` with no argument resumes at the current queue
+                # position, which is what a play button should do after a stop.
+                conn.command("play")
+            return True
+
+        self.with_cmd(run)
+        self.refresh_soon()
+
+    # ------------------------------------------------------------ mutations
+    #
+    # Everything the browser does to the queue and to stored playlists. These
+    # run on the command connection like the transport buttons do -- they are
+    # all single round trips, and ordering against a play/pause matters more
+    # than the microsecond of contention.
+
+    def mutate(self, payload: dict) -> None:
+        op = str(payload.get("op", ""))
+        uri = str(payload.get("uri", "") or "")
+        name = str(payload.get("name", "") or "")
+
+        def one(*command):
+            self.with_cmd(lambda conn: conn.command(*command))
+
+        if op == "playid":
+            one("playid", int(payload.get("id", 0)))
+        elif op == "playpos":
+            one("play", int(payload.get("pos", 0)))
+        elif op == "add" and uri:
+            one("add", uri)
+        elif op == "addplay" and uri:
+            self.with_cmd(lambda conn: self.add_and_play(conn, uri))
+        elif op == "insert" and uri:
+            self.with_cmd(lambda conn: self.add_after_current(conn, uri))
+        elif op in ("findadd", "findplay"):
+            # Everything matching a filter, in one command. The browser adds an
+            # artist by adding a filter rather than by walking their albums and
+            # sending nine hundred `add` lines, which the server would answer
+            # nine hundred times.
+            self.with_cmd(lambda conn: self.find_add(
+                conn, payload.get("filter") or [], op == "findplay"))
+        elif op == "remove":
+            one("deleteid", int(payload.get("id", 0)))
+        elif op == "move":
+            one("move", int(payload.get("from", 0)), int(payload.get("to", 0)))
+        elif op == "clear":
+            one("clear")
+        elif op == "shuffle":
+            one("shuffle")
+        elif op == "crop":
+            self.with_cmd(self.crop_queue)
+        elif op == "loadplaylist" and name:
+            one("load", name)
+        elif op == "saveplaylist" and name:
+            one("save", name)
+        elif op == "rmplaylist" and name:
+            one("rm", name)
+        elif op == "renameplaylist" and name:
+            one("rename", name, str(payload.get("to", "")))
+        elif op == "playlistadd" and name and uri:
+            one("playlistadd", name, uri)
+        else:
+            return
+        self.refresh_soon()
+
+    def queue_length(self, conn: MPDConn) -> int:
+        status = to_dict(conn.command("status")[0])
+        try:
+            return int(status.get("playlistlength", 0))
+        except ValueError:
+            return 0
+
+    def add_and_play(self, conn: MPDConn, uri: str) -> bool:
+        """Append, then start at the first thing appended.
+
+        `addid` would hand back an id to play directly, but it takes a file and
+        this takes whatever the browser had selected -- which is as often a
+        directory or an album's worth of songs. Reading the length first says
+        where that lands without needing to know how much of it there was.
+        """
+        start = self.queue_length(conn)
+        conn.command("add", uri)
+        if self.queue_length(conn) > start:
+            conn.command("play", start)
+        return True
+
+    def add_after_current(self, conn: MPDConn, uri: str) -> bool:
+        """Append, then move what was appended in behind the playing song."""
+        status = to_dict(conn.command("status")[0])
+        start = self.queue_length(conn)
+        conn.command("add", uri)
+        end = self.queue_length(conn)
+        if end <= start:
+            return True
+        current = status.get("song")
+        if current is None:
+            return True
+        try:
+            target = int(current) + 1
+        except ValueError:
+            return True
+        if target >= start:
+            return True
+        conn.command("move", "%d:%d" % (start, end), target)
+        return True
+
+    def find_add(self, conn: MPDConn, filters, then_play: bool) -> bool:
+        args = self.filter_args(conn, filters)
+        if not args:
+            return False
+        start = self.queue_length(conn)
+        conn.command("findadd", *args)
+        end = self.queue_length(conn)
+        if end == start:
+            # A filter that matches nothing is not an error to MPD: it answers
+            # OK and adds no songs. Silence is the wrong answer to a keypress,
+            # and after a database update it is the likely one -- the browser
+            # may still be showing tags the library no longer has.
+            self.emit({"event": "ack",
+                       "error": "nothing in the library matches that any more"})
+            return True
+        if then_play:
+            conn.command("play", start)
+        return True
+
+    def crop_queue(self, conn: MPDConn) -> bool:
+        """Everything but the playing song. Nothing playing means nothing kept."""
+        status = to_dict(conn.command("status")[0])
+        current = status.get("song")
+        if current is None:
+            conn.command("clear")
+            return True
+        position = int(current)
+        length = self.queue_length(conn)
+        # Tail first: deleting the head would renumber the tail underneath us.
+        if length > position + 1:
+            conn.command("delete", "%d:%d" % (position + 1, length))
+        if position > 0:
+            conn.command("delete", "0:%d" % position)
+        return True
+
+    # -------------------------------------------------------------- queries
+
+    def submit_query(self, request: dict) -> None:
+        with self.query_cv:
+            self.query_pending.append(request)
+            self.query_cv.notify()
+
+    def query_worker(self) -> None:
+        while not self.stop.is_set():
+            with self.query_cv:
+                while not self.query_pending and not self.stop.is_set():
+                    self.query_cv.wait(0.5)
+                if self.stop.is_set():
+                    return
+                request = self.query_pending.pop(0)
+                channel = request.get("channel")
+                # A newer request on the same channel has already made this one's
+                # answer stale. Typing into the search box is the case this is
+                # for: eight keystrokes, one query, the last one.
+                if channel and any(r.get("channel") == channel for r in self.query_pending):
+                    continue
+            self.run_query(request)
+
+    def query_conn_for(self, generation: int) -> MPDConn:
+        with self.query_cv:
+            conn = self.query_conn
+        if conn is not None:
+            return conn
+        conn = MPDConn(self.target, self.password)
+        conn.connect()
+        conn.sock.settimeout(CMD_TIMEOUT)
+        with self.query_cv:
+            # A config change while this was connecting retires it before it
+            # ever answers anything.
+            if generation != self.generation:
+                conn.close()
+                raise MPDError("settings changed")
+            self.query_conn = conn
+        return conn
+
+    def drop_query_conn(self, conn: MPDConn) -> None:
+        with self.query_cv:
+            if self.query_conn is conn:
+                self.query_conn = None
+        conn.close()
+
+    def run_query(self, request: dict) -> None:
+        generation = self.generation
+        kind = str(request.get("kind", ""))
+        answer = {
+            "event": "result",
+            "id": request.get("id"),
+            "kind": kind,
+            "channel": request.get("channel", ""),
+        }
+        conn = None
+        try:
+            conn = self.query_conn_for(generation)
+            rows = self.execute_query(conn, kind, request)
+            answer["rows"] = rows
+            # The pane says so rather than quietly showing a prefix of the
+            # answer as though it were all of it.
+            try:
+                if request.get("limit") and len(rows) >= int(request["limit"]):
+                    answer["truncated"] = True
+            except (TypeError, ValueError):
+                pass
+        except MPDCommandError as exc:
+            # The server understood and refused: an unknown playlist, a filter
+            # it does not like. The connection is fine and the client wants to
+            # hear about it in the pane it asked from.
+            answer["rows"] = []
+            answer["error"] = str(exc)
+        except (MPDError, OSError) as exc:
+            if conn is not None:
+                self.drop_query_conn(conn)
+            answer["rows"] = []
+            answer["error"] = error_text(exc)
+        if generation == self.generation and not self.stop.is_set():
+            self.emit(answer)
+
+    def filter_args(self, conn: MPDConn, filters) -> list:
+        """The tail of a find/list/search command for a set of tag conditions.
+
+        MPD 0.21 introduced the filter expression and has spent every release
+        since deprecating the tag/value spelling that came before it. Both are
+        still accepted here because the plugin has no say in which server it is
+        pointed at, and 0.20 is still what a NAS ships.
+        """
+        if not filters:
+            return []
+        pairs = [(str(t), str(v)) for t, v in filters if str(t)]
+        if not pairs:
+            return []
+        if version_at_least(conn.version, 0, 21):
+            clauses = ["(%s == '%s')" % (tag, quote_filter_value(value))
+                       for tag, value in pairs]
+            return ["(" + " AND ".join(clauses) + ")" if len(clauses) > 1 else clauses[0]]
+        flat = []
+        for tag, value in pairs:
+            flat.extend([tag, value])
+        return flat
+
+    def execute_query(self, conn: MPDConn, kind: str, request: dict) -> list:
+        # `search a` on a ten thousand song library is a real thing to type, and
+        # its answer is four megabytes of JSON on one line. The pane asking says
+        # how many rows it can use; nothing asks for more than it will show.
+        try:
+            limit = int(request.get("limit", QUERY_ROW_LIMIT))
+        except (TypeError, ValueError):
+            limit = QUERY_ROW_LIMIT
+        limit = max(1, min(QUERY_ROW_LIMIT, limit))
+
+        if kind == "queue":
+            return split_entries(conn.command("playlistinfo")[0],
+                                 markers=("file",), fields=SONG_FIELDS, limit=limit)
+
+        if kind == "lsinfo":
+            rows = split_entries(conn.command("lsinfo", request.get("path", ""))[0],
+                                 fields=SONG_FIELDS, limit=limit)
+            # MPD returns a directory's contents in database order, which is
+            # insertion order, which is nothing a person can predict. Folders
+            # first, then names, is what every file manager does.
+            rows.sort(key=lambda r: (
+                0 if r["type"] == "directory" else (1 if r["type"] == "playlist" else 2),
+                entry_name(r).lower(),
+            ))
+            return rows
+
+        if kind == "list":
+            tag = str(request.get("tag", "album"))
+            args = [tag] + self.filter_args(conn, request.get("filter") or [])
+            rows = tag_values(conn.command("list", *args)[0], tag, limit=limit)
+            rows.sort(key=lambda r: r["value"].lower())
+            return rows
+
+        if kind == "find":
+            args = self.filter_args(conn, request.get("filter") or [])
+            if not args:
+                return []
+            rows = split_entries(conn.command("find", *args)[0],
+                                 markers=("file",), fields=SONG_FIELDS, limit=limit)
+            if request.get("sort") == "track":
+                rows.sort(key=lambda r: (number(r.get("disc")), number(r.get("track")),
+                                         r.get("file", "")))
+            return rows
+
+        if kind == "search":
+            term = str(request.get("term", "")).strip()
+            if not term:
+                return []
+            if version_at_least(conn.version, 0, 21):
+                args = ["(any contains '%s')" % quote_filter_value(term)]
+            else:
+                args = ["any", term]
+            return split_entries(conn.command("search", *args)[0],
+                                 markers=("file",), fields=SONG_FIELDS, limit=limit)
+
+        if kind == "listplaylists":
+            rows = split_entries(conn.command("listplaylists")[0], markers=("playlist",),
+                                 limit=limit)
+            rows.sort(key=lambda r: r.get("playlist", "").lower())
+            return rows
+
+        if kind == "playlist":
+            name = str(request.get("name", ""))
+            if not name:
+                return []
+            return split_entries(conn.command("listplaylistinfo", name)[0],
+                                 markers=("file",), fields=SONG_FIELDS, limit=limit)
+
+        raise MPDCommandError("unknown query: %s" % kind)
+
+    # --------------------------------------------------------------- art
+
+    def announce_art(self, uri: str, path: str, mime: str = "") -> None:
+        # Every status refresh passes through here, and most of them are about
+        # the same song. Announcing only changes keeps the pipe quiet.
+        if self.art_sent == (uri, path):
+            return
+        self.art_sent = (uri, path)
+        self.emit({"event": "art", "uri": uri, "path": path, "mime": mime})
+
+    def request_art(self, song: dict) -> None:
+        uri = song.get("file", "")
+        if not uri:
+            self.announce_art("", "")
+            return
+        key = art_key(song)
+        cached = cached_art(key)
+        if cached:
+            self.announce_art(uri, cached)
+            return
+        with self.art_lock:
+            if self.art_uri == uri:
+                return
+            self.art_uri = uri
+        threading.Thread(target=self.art_worker, args=(uri, key, self.generation),
+                         daemon=True).start()
+
+    def art_worker(self, uri: str, key: str, generation: int) -> None:
+        # Its own connection: a cover can be megabytes, and holding the command
+        # lock for that long would make the transport buttons feel stuck.
+        conn = MPDConn(self.target, self.password)
+        path = ""
+        mime = ""
+        try:
+            conn.connect()
+            conn.sock.settimeout(CMD_TIMEOUT)
+            # MPD hands binary back in chunks of `binarylimit` bytes, 8KB by
+            # default, so a 3MB cover would be 400 round trips. Servers older
+            # than 0.22 ACK this and keep their default, which still works.
+            try:
+                conn.command("binarylimit", ART_CHUNK)
+            except MPDCommandError:
+                pass
+            data, mime = fetch_art(conn, uri)
+            if data:
+                path = os.path.join(cache_dir(), key + extension_for(data, mime))
+                tmp = path + ".part"
+                with open(tmp, "wb") as handle:
+                    handle.write(data)
+                os.replace(tmp, path)
+                prune_cache()
+        except (MPDError, OSError):
+            path = ""
+        finally:
+            conn.close()
+            with self.art_lock:
+                if self.art_uri == uri:
+                    self.art_uri = ""
+        if generation == self.generation and not self.stop.is_set():
+            self.announce_art(uri, path, mime)
+
+    # ------------------------------------------------------------- stdin
+
+    def handle(self, line: str) -> None:
+        line = line.strip()
+        if not line:
+            return
+        verb, _, rest = line.partition(" ")
+        rest = rest.strip()
+
+        if verb == "config":
+            try:
+                self.apply_config(json.loads(rest or "{}"))
+            except ValueError:
+                pass
+        elif verb == "quit":
+            self.stop.set()
+        elif verb == "refresh":
+            self.refresh_soon()
+        elif verb == "toggle":
+            self.toggle()
+        elif verb == "play":
+            self.do("play")
+        elif verb == "pause":
+            self.do("pause", 1)
+        elif verb == "resume":
+            self.do("pause", 0)
+        elif verb == "stop":
+            self.do("stop")
+        elif verb == "next":
+            self.do("next")
+        elif verb == "prev":
+            self.do("previous")
+        elif verb == "seek":
+            try:
+                self.do("seekcur", "%.3f" % float(rest))
+            except ValueError:
+                pass
+        elif verb == "volume":
+            try:
+                self.do("setvol", max(0, min(100, int(float(rest)))))
+            except ValueError:
+                pass
+        elif verb == "setopt":
+            name, _, value = rest.partition(" ")
+            if name in ("repeat", "random", "single", "consume"):
+                self.do(name, value.strip() or "0")
+        elif verb == "play_id":
+            try:
+                self.do("playid", int(rest))
+            except ValueError:
+                pass
+        elif verb == "update":
+            self.do("update")
+        elif verb == "rescan":
+            self.do("rescan")
+        elif verb == "cmd":
+            try:
+                payload = json.loads(rest or "{}")
+            except ValueError:
+                return
+            if isinstance(payload, dict):
+                # Off the stdin thread: a mutation waits on the command lock,
+                # and a transport button queued behind a blocked one would look
+                # like a dead widget.
+                threading.Thread(target=self.mutate, args=(payload,), daemon=True).start()
+        elif verb == "query":
+            try:
+                payload = json.loads(rest or "{}")
+            except ValueError:
+                return
+            if isinstance(payload, dict):
+                self.submit_query(payload)
+
+    def run(self) -> int:
+        threading.Thread(target=self.manager, daemon=True).start()
+        threading.Thread(target=self.query_worker, daemon=True).start()
+        try:
+            while not self.stop.is_set():
+                line = sys.stdin.readline()
+                if not line:
+                    break  # the shell closed our stdin
+                self.handle(line)
+        except KeyboardInterrupt:
+            pass
+        self.stop.set()
+        self.generation += 1
+        with self.query_cv:
+            self.query_cv.notify_all()
+        self.drop("shutting down")
+        return 0
+
+
+def main() -> int:
+    # A cover written to a closed stdout should end the process quietly rather
+    # than print a traceback into the shell's log.
+    try:
+        return Bridge().run()
+    except BrokenPipeError:
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

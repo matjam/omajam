@@ -1,0 +1,79 @@
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Nothing here writes. The job only reads the checkout and reports.
+permissions:
+  contents: read
+
+env:
+  # basecamp/omarchy, quattro @ 2026-08-11. Pinned rather than tracking the
+  # branch because this workflow executes the file it downloads. Bump it
+  # deliberately; the drift check below says when that is worth doing.
+  OMARCHY_SHA: 08204846ef6c2e2de8eba873d5888749e1d46ba5
+  # sha256 of bin/omarchy-plugin-validate at that commit. A pinned URL is
+  # already content-addressed, so this guards the transport rather than the
+  # source, and makes a surprise loud instead of silent.
+  VALIDATOR_SHA256: f7507e5042eb970e3dc918bdf6bf251c7557443892a77e71a17d7019ddde72c8
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Fetch Omarchy's plugin validator
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o /tmp/omarchy-plugin-validate \
+            "https://raw.githubusercontent.com/basecamp/omarchy/${OMARCHY_SHA}/bin/omarchy-plugin-validate"
+          echo "${VALIDATOR_SHA256}  /tmp/omarchy-plugin-validate" | sha256sum -c -
+          chmod +x /tmp/omarchy-plugin-validate
+
+      # The checks the shell enforces before it will load a plugin: manifest
+      # schema, entry points that exist, no symlinks, unreserved id.
+      - name: omarchy plugin validate
+        run: /tmp/omarchy-plugin-validate .
+
+      # The checks the marketplace enforces before it will list one. Disjoint
+      # from the above: a repo can pass that and still be rejected here.
+      - name: Marketplace listing checks
+        run: ./.github/scripts/marketplace-check.sh
+
+      # A pin that is never revisited silently stops testing what Omarchy
+      # actually enforces today. Downloaded to hash, never executed, so this
+      # stays a warning rather than a reason to distrust the run.
+      #
+      # continue-on-error because this reports on the pin rather than checking
+      # the repository: an advisory step that can fail the build turns "the
+      # upstream validator moved" into "your pull request is broken", and a
+      # transient outage into the same. The checks that decide pass or fail are
+      # the two above.
+      - name: Note if the pinned validator has moved on
+        if: always()
+        continue-on-error: true
+        env:
+          # The API is 60 requests an hour unauthenticated, shared across every
+          # runner on the same address, so this is a 403 in CI more often than
+          # not. The workflow's own token lifts it to 1000 and needs no secret.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          head_sha=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/basecamp/omarchy/commits/quattro" \
+            | jq -r '.sha')
+          if [[ $head_sha == "$OMARCHY_SHA" ]]; then
+            echo "Validator pin is current ($OMARCHY_SHA)."
+            exit 0
+          fi
+          curl -fsSL -o /tmp/opv-head \
+            "https://raw.githubusercontent.com/basecamp/omarchy/${head_sha}/bin/omarchy-plugin-validate"
+          if sha256sum /tmp/opv-head | grep -q "$VALIDATOR_SHA256"; then
+            echo "Omarchy has moved to $head_sha but the validator is unchanged."
+          else
+            echo "::warning::omarchy-plugin-validate changed upstream. Review it, then bump OMARCHY_SHA to $head_sha and VALIDATOR_SHA256 to $(sha256sum /tmp/opv-head | cut -d' ' -f1) in .github/workflows/validate.yml"
+          fi

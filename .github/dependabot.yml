@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Pinning actions to commit SHAs stops a retargeted tag running code here,
+  # but a pin left alone also stops security fixes arriving. Dependabot
+  # understands the `uses: owner/repo@<sha> # vX.Y.Z` form and updates both
+  # parts, turning the pin into a reviewed decision rather than a stale one.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      # Conventional, and deliberately not feat/fix: a CI bump should not cut
+      # a release of the plugin.
+      prefix: chore

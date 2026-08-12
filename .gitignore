@@ -1,0 +1,3 @@
+# Local agent settings, not part of the plugin.
+.claude/
+__pycache__/
