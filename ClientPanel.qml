@@ -26,6 +26,10 @@ Item {
   property var service: null
   property Item anchorItem: null
   property bool open: false
+  // Whoever is responsible for `open`. The bar widget passes itself, so the
+  // shell's summon/hide and the bar's popout coordinator act on the widget
+  // rather than on something only this file knows about.
+  property var owner: null
 
   // The widget's saved settings and the things only the widget can answer.
   // The settings tab shows them; the widget saves them, because writing to
@@ -368,7 +372,7 @@ Item {
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
-    owner: ownerProxy
+    owner: root.owner || ownerProxy
     bar: root.bar
     open: root.open
     focusTarget: keyCatcher

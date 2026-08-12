@@ -95,24 +95,37 @@ Panel {
   function previousTrack() { if (service) service.previous() }
   function stopPlayback() { if (service) service.stop() }
 
-  // The client panel. Its own open state rather than the Panel base's, which
-  // the settings panel already uses -- both are popouts of this widget and
-  // either can be up, but not both.
-  property bool clientOpen: false
+  // The window is this widget's panel, so it uses the Panel base's own
+  // open/close/opened rather than a second lifecycle beside it. The shell
+  // summons bar widgets through exactly those three -- see Bar.findPanelWidget,
+  // which is also what picks the copy on the focused monitor -- so anything
+  // less would leave `omarchy-shell shell toggle matjam.omajam` opening
+  // nothing.
+  readonly property bool clientOpen: opened
 
-  function openClient() { clientOpen = true }
-  function closeClient() { clientOpen = false }
-  function toggleClient() { clientOpen = !clientOpen }
+  // Routed through the shell when it can be. A bar widget exists once per
+  // monitor but answers IPC once, so acting on `this` would open the window on
+  // whichever copy happened to register the target. The shell picks the copy on
+  // the monitor with focus, which is the one whose keyboard just asked.
+  function viaShell(name) {
+    var shell = bar ? bar.shell : null
+    if (!shell || typeof shell[name] !== "function") return false
+    return shell[name](moduleName) !== false
+  }
 
-  // The settings live in the client now, as its last tab. The cog opens the
-  // window there; a second press closes it again rather than doing nothing.
+  function openClient() { if (!viaShell("summon")) open() }
+  function closeClient() { if (!viaShell("hide")) close() }
+  function toggleClient() { if (!viaShell("toggle")) toggle() }
+
+  // The settings live in the window now, as its last tab. The cog opens it
+  // there; a second press closes it again rather than doing nothing.
   function toggleSettings() {
-    if (clientOpen && clientPanel.tab === "settings") {
-      clientOpen = false
+    if (opened && clientPanel.tab === "settings") {
+      close()
       return
     }
     clientPanel.openSettings()
-    clientOpen = true
+    open()
   }
 
   function handleWheel(delta) {
@@ -428,8 +441,8 @@ Panel {
 
   // The cog and a right-click both land on the settings tab of the client, and
   // the python probe only has to run once there is somewhere to show it.
-  onClientOpenChanged: {
-    if (!clientOpen) return
+  onOpenedChanged: {
+    if (!opened) return
     previewDelay.stop()
     previewShown = false
     if (!pythonProbe.running) pythonProbe.running = true
@@ -688,7 +701,10 @@ Panel {
     bar: root.bar
     service: root.service
     anchorItem: nowPlaying.visible ? nowPlaying : gearButton
-    open: root.clientOpen
+    // The widget owns the window: closing it, and the bar's one-popout-at-a-
+    // time coordination, both go through the Panel base.
+    owner: root
+    open: root.opened
     // Everything the settings tab shows about this widget, and the one thing it
     // cannot do for itself: saving. shell.json has a single writer -- the shell
     // -- and this is the half of the plugin that knows how to ask it.

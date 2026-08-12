@@ -192,14 +192,19 @@ omarchy-shell matjam.omajam key esc  # named keys: esc enter tab space
 omarchy-shell matjam.omajam state    # what the window is showing, as JSON
 ```
 
-```conf
-# hyprland binds
-bindl = , XF86AudioPlay, exec, omarchy-shell -q mpd toggle
-bindl = , XF86AudioNext, exec, omarchy-shell -q mpd next
-bindl = , XF86AudioPrev, exec, omarchy-shell -q mpd previous
-bind = SUPER, M, exec, omarchy-shell matjam.omajam client
-bind = SUPER SHIFT, M, exec, omarchy-shell matjam.omajam settings
+Binds go in `~/.config/hypr/bindings.lua`:
+
+```lua
+o.bind("SUPER + M", "omajam", "omarchy-shell matjam.omajam client")
+o.bind("SUPER + SHIFT + M", "omajam settings", "omarchy-shell matjam.omajam settings")
+
+o.bind("XF86AudioPlay", "Play/pause", "omarchy-shell -q mpd toggle", { locked = true })
+o.bind("XF86AudioNext", "Next track", "omarchy-shell -q mpd next", { locked = true })
+o.bind("XF86AudioPrev", "Previous track", "omarchy-shell -q mpd previous", { locked = true })
 ```
+
+`locked = true` keeps the transport keys working on the lock screen. The window
+opens on the monitor with focus, wherever the widget itself lives.
 
 ## How it works
 
