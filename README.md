@@ -5,6 +5,8 @@ Quattro bar: what's playing in the bar, and a window behind it holding the
 queue, your library, your playlists and a search box, laid out like
 [rmpc](https://github.com/mierak/rmpc) and using the same keys.
 
+![omajam](preview.png)
+
 > **Written by Claude**, Anthropic's coding agent. Omarchy plugins run
 > unsandboxed inside your shell process, with your permissions. Read the source
 > first. No promises about your record collection.
