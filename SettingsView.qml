@@ -327,16 +327,34 @@ Item {
           width: parent.width
           foreground: root.foreground
           placeholderText: "[%artist% - ]%title%"
-          onTextChanged: if (activeFocus) root.formatEdited = true
+          onTextChanged: {
+            if (!activeFocus) return
+            root.formatEdited = true
+            formatSave.restart()
+          }
           onAccepted: {
+            formatSave.stop()
             root.formatEdited = false
             root.persist("format", text)
           }
           onEditingFinished: {
             if (!root.formatEdited) return
+            formatSave.stop()
             root.formatEdited = false
             if (text !== root.formatSetting) root.persist("format", text)
           }
+        }
+
+        // The label is the one setting whose effect is on the bar rather than
+        // in this panel, and writing a format is a fiddling exercise: the bar
+        // should follow along while it is typed. Saved shortly after typing
+        // stops. The connection fields above are deliberately not treated this
+        // way, since each save there costs a reconnect.
+        Timer {
+          id: formatSave
+          interval: 500
+          repeat: false
+          onTriggered: if (root.formatEdited) root.persist("format", formatField.text)
         }
 
         // Live, from the field rather than from the saved setting, so the

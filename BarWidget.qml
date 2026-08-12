@@ -711,7 +711,7 @@ Panel {
     widgetSettings: root.settings
     version: root.version
     pythonPresent: root.pythonPresent
-    onCloseRequested: root.clientOpen = false
+    onCloseRequested: root.close()
     onPersistRequested: function(key, value) { root.persist(key, value) }
   }
 
