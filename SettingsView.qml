@@ -8,17 +8,17 @@ import "Format.js" as Format
 // The plugin's own settings, as a tab of the client rather than as a second
 // popup off the bar.
 //
-// Two kinds of setting live here and the difference matters. The connection and
-// the label belong to this widget and are written to shell.json through the
-// shell -- which is the only thing allowed to write that file, so they leave
-// here as a request rather than as a file operation. Repeat, random, single,
-// consume and volume belong to the *server*: they are sent to MPD, they are not
-// stored here at all, and every other client on the machine sees them change.
+// Only the plugin's own settings: where the server is, and what the bar shows.
+// Both are written to shell.json through the shell, which is the only thing
+// allowed to write that file, so they leave here as a request rather than as a
+// file operation.
+//
+// MPD's own playback options are not here. They are in the header, where they
+// are one glyph and one click, and on z/x/c/v from anywhere in the window.
 Item {
   id: root
 
   property var service: null
-  property var bar: null
   property bool active: false
 
   // The widget's saved settings, read by whoever owns this -- the bar widget,
@@ -142,9 +142,8 @@ Item {
 
   // --------------------------------------------------------------- layout
   //
-  // Two columns: the widget's own settings on the left, the server's on the
-  // right. Keeping them apart is the point -- one half is this plugin's, and
-  // the other half every MPD client on the machine shares.
+  // Two columns: the connection and the label on the left, the bar strip on the
+  // right.
 
   Flickable {
     id: sheet
@@ -536,91 +535,6 @@ Item {
           }
         }
 
-        PanelSeparator { foreground: root.foreground }
-
-        PanelSectionHeader {
-          text: "PLAYBACK — THE SERVER'S, NOT THIS WIDGET'S"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-        }
-
-        Text {
-          width: parent.width
-          text: "Every MPD client sees these change. z, x, v and c toggle them from anywhere in this window."
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
-
-        Toggle {
-          width: parent.width
-          label: "Repeat"
-          checked: root.connected && root.service.repeatOn
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: if (root.service) root.service.toggleOption("repeat")
-        }
-
-        Toggle {
-          width: parent.width
-          label: "Random"
-          checked: root.connected && root.service.randomOn
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: if (root.service) root.service.toggleOption("random")
-        }
-
-        Toggle {
-          width: parent.width
-          label: "Single"
-          description: root.service && root.service.singleMode === "oneshot"
-            ? "Once: stop after this track, then back off."
-            : "Stop after each track."
-          checked: root.connected && root.service.singleMode !== "0"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: if (root.service) root.service.toggleOption("single")
-        }
-
-        Toggle {
-          width: parent.width
-          label: "Consume"
-          description: "Remove each track from the queue as it finishes."
-          checked: root.connected && root.service.consumeOn
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: if (root.service) root.service.toggleOption("consume")
-        }
-
-        PanelSectionHeader {
-          visible: root.connected && root.service.volume >= 0
-          text: "VOLUME"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-        }
-
-        PanelSlider {
-          visible: root.connected && root.service.volume >= 0
-          width: parent.width
-          bar: root.bar
-          minimum: 0
-          maximum: 100
-          step: 5
-          integer: true
-          value: root.connected ? root.service.volume : 0
-          onMoved: function(v) { if (root.service) root.service.setVolume(v) }
-        }
-
-        Text {
-          visible: root.connected && root.service.volume < 0
-          width: parent.width
-          text: "This MPD has no mixer, so volume is whatever your output device says."
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
       }
     }
   }

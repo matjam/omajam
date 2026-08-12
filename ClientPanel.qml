@@ -757,7 +757,6 @@ Item {
             visible: root.tab === "settings"
             active: visible && root.open
             service: root.service
-            bar: root.bar
             settings: root.widgetSettings
             version: root.version
             pythonPresent: root.pythonPresent

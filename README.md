@@ -123,8 +123,8 @@ the host field is empty.
 **In the bar** — label width, scroll or elide, which parts of the strip to
 show, what to do when nothing is playing, and what the scroll wheel does.
 
-**Playback** — repeat, random, single, consume and volume. These belong to the
-server: every MPD client sees them change.
+MPD's own playback options aren't here: repeat, random, single and consume are
+glyphs in the window's header, and `z`/`x`/`c`/`v` from anywhere in it.
 
 ## Format
 
