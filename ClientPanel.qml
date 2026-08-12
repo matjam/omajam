@@ -178,6 +178,37 @@ Item {
     finding = false
     findField.focus = false
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    focusSettle.tries = 0
+    focusSettle.restart()
+  }
+
+  // Focus arrives in stages: the window maps, the compositor hands the layer
+  // surface its keyboard, and only then is there anything for Qt to give focus
+  // to. A single forceActiveFocus() on open can run before all of that, and the
+  // first keypress goes nowhere -- which reads as having to press it twice.
+  //
+  // Re-asserted until it sticks, and abandoned quickly either way. A field that
+  // wants the keyboard -- the search box, the find line -- keeps it: stealing
+  // focus back would be a worse bug than the one being fixed.
+  Timer {
+    id: focusSettle
+    interval: 40
+    repeat: true
+    property int tries: 0
+
+    onTriggered: {
+      var view = root.pane()
+      // Search focuses its own box on arrival, and the find line owns the
+      // keyboard while it is up. Neither is a race worth winning: leave them
+      // alone rather than pulling focus back a tick later.
+      if (!root.open || tries > 10 || root.finding || root.tab === "search"
+          || (view && view.inputFocused === true) || keyCatcher.activeFocus) {
+        stop()
+        return
+      }
+      tries++
+      keyCatcher.forceActiveFocus()
+    }
   }
 
   // ============================================================== the keys
