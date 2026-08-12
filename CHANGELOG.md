@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0](https://github.com/matjam/omajam/compare/v1.0.0...v1.1.0) (2026-08-12)
+
+
+### Features
+
+* group the settings behind General, Bar and Server ([44265c1](https://github.com/matjam/omajam/commit/44265c17ab76b8eb02f0e832b60fec9c24dd2739))
+* optional notification on track change ([8aa6703](https://github.com/matjam/omajam/commit/8aa670349bde10b991d260e9d09be39344997b7a))
+
 ## [1.0.0](https://github.com/matjam/omajam/compare/v0.1.0...v1.0.0) (2026-08-12)
 
 
