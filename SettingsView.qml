@@ -37,6 +37,16 @@ Item {
 
   signal persistRequested(string key, var value)
 
+  // Which group of settings is showing. General first because it holds the two
+  // people change: the label and how wide it may be.
+  property string section: "general"
+
+  function sectionLabel() {
+    if (section === "bar") return "Bar"
+    if (section === "server") return "Server"
+    return "General"
+  }
+
   // A field with the keyboard must keep it: the client's key handler would
   // otherwise read a hostname with an "n" in it as "next track".
   readonly property bool inputFocused: hostField.activeFocus || portField.field.activeFocus
@@ -95,7 +105,13 @@ Item {
   onPasswordSettingChanged: if (!passwordEdited) passwordField.text = passwordSetting
 
   onActiveChanged: {
-    if (!active) return
+    // Closed and reopened should land on General rather than wherever it was
+    // left, and the fields should show what is saved rather than a half-typed
+    // edit abandoned last time.
+    if (!active) {
+      section = "general"
+      return
+    }
     formatEdited = false
     hostEdited = false
     passwordEdited = false
@@ -143,213 +159,175 @@ Item {
 
   // --------------------------------------------------------------- layout
   //
-  // Two columns: the connection and the label on the left, the bar strip on the
-  // right.
+  // Three groups behind a switcher rather than one column that has to be
+  // scrolled. Each group is controls on the left and the text explaining them
+  // on the right, which is what keeps a group to one screen.
 
-  Flickable {
-    id: sheet
+  Column {
     anchors.fill: parent
-    contentHeight: columns.implicitHeight
-    clip: true
-    boundsBehavior: Flickable.StopAtBounds
+    spacing: Style.space(12)
 
-    // The same wheel step the lists use, for the same reason: a notch should
-    // move a readable amount. Touchpads keep Flickable's own smooth handling.
-    WheelHandler {
-      acceptedDevices: PointerDevice.Mouse
-      onWheel: function(event) {
-        if (event.angleDelta.y === 0) return
-        var span = Math.max(0, sheet.contentHeight - sheet.height)
-        if (span <= 0) return
-        sheet.cancelFlick()
-        var step = Style.font.body * 8 * event.angleDelta.y / 120
-        sheet.contentY = Math.max(0, Math.min(span, sheet.contentY - step))
-      }
+    ButtonGroup {
+      width: parent.width
+      options: ["General", "Bar", "Server"]
+      value: root.sectionLabel()
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      onChanged: function(v) { root.section = String(v).toLowerCase() }
     }
 
-    Row {
-      id: columns
+    Flickable {
+      id: sheet
       width: parent.width
-      spacing: Style.space(24)
+      height: parent.height - y
+      contentHeight: groups.implicitHeight
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
 
-      Column {
-        id: leftColumn
-        width: Math.round((columns.width - Style.space(24)) * 0.55)
-        spacing: Style.space(10)
-
-        PanelSectionHeader {
-          text: "SERVER"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
+      // A group should fit, but a short screen is still a screen.
+      WheelHandler {
+        onWheel: function(event) {
+          if (event.angleDelta.y === 0) return
+          var span = Math.max(0, sheet.contentHeight - sheet.height)
+          if (span <= 0) return
+          sheet.cancelFlick()
+          var step = Style.font.body * 8 * event.angleDelta.y / 120
+          sheet.contentY = Math.max(0, Math.min(span, sheet.contentY - step))
         }
+      }
 
-        Text {
+      Item {
+        id: groups
+        width: sheet.width
+        implicitHeight: Math.max(generalGroup.implicitHeight,
+                                 barGroup.implicitHeight,
+                                 serverGroup.implicitHeight)
+
+        readonly property int columnGap: Style.space(24)
+        readonly property int narrow: Math.round((width - columnGap) * 0.55)
+        readonly property int wide: width - narrow - columnGap
+
+        // ═════════════════════════════════════════════════════════ general
+
+        Row {
+          id: generalGroup
+          visible: root.section === "general"
           width: parent.width
-          text: root.connectionLine
-          color: root.connected ? root.dim : Color.urgent
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
+          spacing: groups.columnGap
 
-        Text {
-          visible: root.pythonPresent === 0
-          width: parent.width
-          text: "python3 is not installed — run: sudo pacman -S python"
-          color: Color.urgent
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
+          Column {
+            width: groups.narrow
+            spacing: Style.space(10)
 
-        TextField {
-          id: hostField
-          width: parent.width
-          foreground: root.foreground
-          placeholderText: "127.0.0.1, or /run/mpd/socket"
-          onTextChanged: if (activeFocus) root.hostEdited = true
-          onAccepted: {
-            root.hostEdited = false
-            root.persist("host", text.trim())
-          }
-          onEditingFinished: {
-            if (!root.hostEdited) return
-            root.hostEdited = false
-            if (text.trim() !== root.hostSetting) root.persist("host", text.trim())
-          }
-        }
+            PanelSectionHeader {
+              text: "LABEL"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
 
-        Text {
-          width: parent.width
-          text: "Empty follows $MPD_HOST, then 127.0.0.1. A path or an @name is a unix socket, and the port is ignored for those."
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
+            TextField {
+              id: formatField
+              width: parent.width
+              foreground: root.foreground
+              placeholderText: "[%artist% - ]%title%"
+              onTextChanged: {
+                if (!activeFocus) return
+                root.formatEdited = true
+                formatSave.restart()
+              }
+              onAccepted: {
+                formatSave.stop()
+                root.formatEdited = false
+                root.persist("format", text)
+              }
+              onEditingFinished: {
+                if (!root.formatEdited) return
+                formatSave.stop()
+                root.formatEdited = false
+                if (text !== root.formatSetting) root.persist("format", text)
+              }
+            }
 
-        NumberField {
-          id: portField
-          label: "Port"
-          value: root.portSetting
-          from: 1
-          to: 65535
-          stepSize: 1
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onModified: function(v) { root.persist("port", v) }
-        }
+            // Live, from the field rather than from the saved setting, so the
+            // effect of a bracket is visible before committing to it.
+            Text {
+              width: parent.width
+              text: {
+                var rendered = Format.render(formatField.text, root.previewTokens)
+                return rendered === "" ? "(empty)" : rendered
+              }
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideRight
+            }
 
-        TextField {
-          id: passwordField
-          width: parent.width
-          foreground: root.foreground
-          password: true
-          placeholderText: "Password (only if MPD asks for one)"
-          onTextChanged: if (activeFocus) root.passwordEdited = true
-          onAccepted: {
-            root.passwordEdited = false
-            root.persist("password", text)
-          }
-          onEditingFinished: {
-            if (!root.passwordEdited) return
-            root.passwordEdited = false
-            if (text !== root.passwordSetting) root.persist("password", text)
-          }
-        }
+            NumberField {
+              label: "Label width (pixels)"
+              value: root.maxWidthSetting
+              from: 40
+              to: 1200
+              stepSize: 20
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onModified: function(v) { root.persist("maxWidth", v) }
+            }
 
-        Text {
-          visible: root.passwordSetting !== ""
-          width: parent.width
-          text: "Stored as plain text in shell.json, like every other shell setting. Leave it empty and set $MPD_HOST to password@host if that matters to you."
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
+            ButtonGroup {
+              width: parent.width
+              options: ["Scroll", "Elide"]
+              value: root.overflowSetting === "elide" ? "Elide" : "Scroll"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onChanged: function(v) { root.persist("overflow", String(v).toLowerCase()) }
+            }
 
-        // Flow rather than Row: three buttons and a narrow column, and a
-        // button that falls off the edge is worse than one on a second line.
-        Flow {
-          width: parent.width
-          spacing: Style.space(8)
-
-          Button {
-            text: "Reconnect"
-            bordered: true
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: if (root.service) root.service.reconnect()
-          }
-
-          Button {
-            text: root.scanning ? "Scanning…" : "Update database"
-            bordered: true
-            enabled: root.connected && !root.scanning
-            opacity: enabled ? 1.0 : 0.4
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: if (root.service) root.service.updateDatabase()
+            Toggle {
+              width: parent.width
+              label: "Notify on track change"
+              description: "A desktop notification with the cover, through the shell's own notifications."
+              checked: root.notifyTrackSetting
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.persist("notifyTrack", !root.notifyTrackSetting)
+            }
           }
 
-          Button {
-            text: "Rescan everything"
-            bordered: true
-            enabled: root.connected && !root.scanning
-            opacity: enabled ? 1.0 : 0.4
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: if (root.service) root.service.rescanDatabase()
-          }
-        }
+          Column {
+            width: groups.wide
+            spacing: Style.space(10)
 
-        Text {
-          width: parent.width
-          text: root.scanning
-            ? "MPD is reading the library. It says nothing about how far along it is, only that it is still going."
-            : "Update reads the files whose timestamps changed, which is what you want after adding a record. Rescan re-reads every file in the library and takes as long as that sounds — for tags edited in place, which leave the timestamp alone. u and U do the same two things from anywhere in this window."
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
+            PanelSectionHeader {
+              text: "FORMAT"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
 
-        PanelSeparator { foreground: root.foreground }
+            Text {
+              width: parent.width
+              text: "%tag% substitutes · [ ] drops the whole group when a tag inside is missing · [a|b] takes the first that resolves"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
 
-        PanelSectionHeader {
-          text: "LABEL FORMAT"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-        }
-
-        TextField {
-          id: formatField
-          width: parent.width
-          foreground: root.foreground
-          placeholderText: "[%artist% - ]%title%"
-          onTextChanged: {
-            if (!activeFocus) return
-            root.formatEdited = true
-            formatSave.restart()
-          }
-          onAccepted: {
-            formatSave.stop()
-            root.formatEdited = false
-            root.persist("format", text)
-          }
-          onEditingFinished: {
-            if (!root.formatEdited) return
-            formatSave.stop()
-            root.formatEdited = false
-            if (text !== root.formatSetting) root.persist("format", text)
+            Text {
+              width: parent.width
+              text: Format.tagNames().join(" · ")
+              color: Qt.darker(root.foreground, 1.8)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
           }
         }
 
         // The label is the one setting whose effect is on the bar rather than
         // in this panel, and writing a format is a fiddling exercise: the bar
         // should follow along while it is typed. Saved shortly after typing
-        // stops. The connection fields above are deliberately not treated this
-        // way, since each save there costs a reconnect.
+        // stops. The connection fields are deliberately not treated this way,
+        // since each save there costs a reconnect.
         Timer {
           id: formatSave
           interval: 500
@@ -357,195 +335,321 @@ Item {
           onTriggered: if (root.formatEdited) root.persist("format", formatField.text)
         }
 
-        // Live, from the field rather than from the saved setting, so the
-        // effect of a bracket is visible before committing to it.
-        Text {
+        // ═════════════════════════════════════════════════════════════ bar
+
+        Row {
+          id: barGroup
+          visible: root.section === "bar"
           width: parent.width
-          text: {
-            var rendered = Format.render(formatField.text, root.previewTokens)
-            return rendered === "" ? "(empty)" : rendered
+          spacing: groups.columnGap
+
+          Column {
+            width: groups.narrow
+            spacing: Style.space(10)
+
+            PanelSectionHeader {
+              text: "PARTS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Playback controls"
+              description: "Previous, play/pause and next in the bar."
+              checked: root.showControlsSetting
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.persist("showControls", !root.showControlsSetting)
+            }
+
+            ButtonGroup {
+              visible: root.showControlsSetting
+              width: parent.width
+              options: ["Before label", "After label"]
+              value: root.controlsPositionSetting === "left" ? "Before label" : "After label"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onChanged: function(v) {
+                root.persist("controlsPosition", String(v).indexOf("Before") === 0 ? "left" : "right")
+              }
+            }
+
+            Toggle {
+              visible: root.showControlsSetting
+              width: parent.width
+              label: "Stop button"
+              description: "A fourth button. Play still resumes where stop left off."
+              checked: root.showStopSetting
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.persist("showStop", !root.showStopSetting)
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Play state glyph"
+              description: "The ▶ / ⏸ ahead of the label."
+              checked: root.showStateIconSetting
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.persist("showStateIcon", !root.showStateIconSetting)
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Cover thumbnail"
+              description: "A small cover in the bar as well as in the hover card."
+              checked: root.showArtSetting
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.persist("showArt", !root.showArtSetting)
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Settings button"
+              description: "The cog beside the label, which opens this tab."
+              checked: root.showSettingsButtonSetting
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.persist("showSettingsButton", !root.showSettingsButtonSetting)
+            }
           }
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          elide: Text.ElideRight
-        }
 
-        Text {
-          width: parent.width
-          text: "%tag% substitutes · [ ] drops the whole group when a tag inside is missing · [a|b] takes the first that resolves"
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
+          Column {
+            width: groups.wide
+            spacing: Style.space(10)
 
-        Text {
-          width: parent.width
-          text: Format.tagNames().join(" · ")
-          color: Qt.darker(root.foreground, 1.8)
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
+            PanelSectionHeader {
+              text: "WHEN NOTHING IS PLAYING"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
 
-        Text {
-          visible: root.version !== ""
-          width: parent.width
-          text: "omajam v" + root.version
-          color: Qt.darker(root.foreground, 1.9)
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-        }
-      }
+            ButtonGroup {
+              width: parent.width
+              options: ["Show icon", "Hide widget"]
+              value: root.whenIdleSetting === "hide" ? "Hide widget" : "Show icon"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onChanged: function(v) {
+                root.persist("whenIdle", String(v).indexOf("Hide") === 0 ? "hide" : "icon")
+              }
+            }
 
-      Column {
-        width: columns.width - leftColumn.width - Style.space(24)
-        spacing: Style.space(10)
+            Text {
+              visible: root.whenIdleSetting === "hide"
+              width: parent.width
+              text: "The whole widget goes when nothing is playing, cog included. `omarchy-shell matjam.omajam client` brings this window back."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
 
-        PanelSectionHeader {
-          text: "IN THE BAR"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-        }
+            PanelSectionHeader {
+              text: "SCROLL WHEEL"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
 
-        NumberField {
-          label: "Label width (pixels)"
-          value: root.maxWidthSetting
-          from: 40
-          to: 1200
-          stepSize: 20
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onModified: function(v) { root.persist("maxWidth", v) }
-        }
+            ButtonGroup {
+              width: parent.width
+              options: ["Volume", "Seek", "Track", "Nothing"]
+              value: {
+                if (root.wheelActionSetting === "seek") return "Seek"
+                if (root.wheelActionSetting === "track") return "Track"
+                if (root.wheelActionSetting === "none") return "Nothing"
+                return "Volume"
+              }
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onChanged: function(v) {
+                var picked = String(v).toLowerCase()
+                root.persist("wheelAction", picked === "nothing" ? "none" : picked)
+              }
+            }
 
-        ButtonGroup {
-          width: parent.width
-          options: ["Scroll", "Elide"]
-          value: root.overflowSetting === "elide" ? "Elide" : "Scroll"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onChanged: function(v) { root.persist("overflow", String(v).toLowerCase()) }
-        }
-
-        Toggle {
-          width: parent.width
-          label: "Playback controls"
-          description: "Previous, play/pause and next in the bar."
-          checked: root.showControlsSetting
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: root.persist("showControls", !root.showControlsSetting)
-        }
-
-        ButtonGroup {
-          visible: root.showControlsSetting
-          width: parent.width
-          options: ["Before label", "After label"]
-          value: root.controlsPositionSetting === "left" ? "Before label" : "After label"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onChanged: function(v) {
-            root.persist("controlsPosition", String(v).indexOf("Before") === 0 ? "left" : "right")
-          }
-        }
-
-        Toggle {
-          visible: root.showControlsSetting
-          width: parent.width
-          label: "Stop button"
-          description: "A fourth button. Play still resumes where stop left off."
-          checked: root.showStopSetting
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: root.persist("showStop", !root.showStopSetting)
-        }
-
-        Toggle {
-          width: parent.width
-          label: "Play state glyph"
-          description: "The ▶ / ⏸ ahead of the label."
-          checked: root.showStateIconSetting
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: root.persist("showStateIcon", !root.showStateIconSetting)
-        }
-
-        Toggle {
-          width: parent.width
-          label: "Cover thumbnail"
-          description: "A small cover in the bar as well as in the hover card."
-          checked: root.showArtSetting
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: root.persist("showArt", !root.showArtSetting)
-        }
-
-        Toggle {
-          width: parent.width
-          label: "Settings button"
-          description: "The cog beside the label, which opens this tab. Off leaves right-click on the label as the way here."
-          checked: root.showSettingsButtonSetting
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: root.persist("showSettingsButton", !root.showSettingsButtonSetting)
-        }
-
-        ButtonGroup {
-          width: parent.width
-          options: ["Show icon", "Hide widget"]
-          value: root.whenIdleSetting === "hide" ? "Hide widget" : "Show icon"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onChanged: function(v) {
-            root.persist("whenIdle", String(v).indexOf("Hide") === 0 ? "hide" : "icon")
-          }
-        }
-
-        Text {
-          visible: root.whenIdleSetting === "hide"
-          width: parent.width
-          text: "The whole widget goes when nothing is playing, cog included. `omarchy-shell matjam.omajam client` brings this window back."
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
-
-        Toggle {
-          width: parent.width
-          label: "Notify on track change"
-          description: "A desktop notification with the cover, through the shell's own notifications."
-          checked: root.notifyTrackSetting
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: root.persist("notifyTrack", !root.notifyTrackSetting)
-        }
-
-        PanelSectionHeader {
-          text: "SCROLL WHEEL"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-        }
-
-        ButtonGroup {
-          width: parent.width
-          options: ["Volume", "Seek", "Track", "Nothing"]
-          value: {
-            if (root.wheelActionSetting === "seek") return "Seek"
-            if (root.wheelActionSetting === "track") return "Track"
-            if (root.wheelActionSetting === "none") return "Nothing"
-            return "Volume"
-          }
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onChanged: function(v) {
-            var picked = String(v).toLowerCase()
-            root.persist("wheelAction", picked === "nothing" ? "none" : picked)
+            Text {
+              width: parent.width
+              text: "Over the label in the bar, not over this window."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
           }
         }
 
+        // ══════════════════════════════════════════════════════════ server
+
+        Row {
+          id: serverGroup
+          visible: root.section === "server"
+          width: parent.width
+          spacing: groups.columnGap
+
+          Column {
+            width: groups.narrow
+            spacing: Style.space(10)
+
+            PanelSectionHeader {
+              text: "CONNECTION"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Text {
+              width: parent.width
+              text: root.connectionLine
+              color: root.connected ? root.dim : Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              visible: root.pythonPresent === 0
+              width: parent.width
+              text: "python3 is not installed — run: sudo pacman -S python"
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            TextField {
+              id: hostField
+              width: parent.width
+              foreground: root.foreground
+              placeholderText: "127.0.0.1, or /run/mpd/socket"
+              onTextChanged: if (activeFocus) root.hostEdited = true
+              onAccepted: {
+                root.hostEdited = false
+                root.persist("host", text.trim())
+              }
+              onEditingFinished: {
+                if (!root.hostEdited) return
+                root.hostEdited = false
+                if (text.trim() !== root.hostSetting) root.persist("host", text.trim())
+              }
+            }
+
+            NumberField {
+              id: portField
+              label: "Port"
+              value: root.portSetting
+              from: 1
+              to: 65535
+              stepSize: 1
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onModified: function(v) { root.persist("port", v) }
+            }
+
+            TextField {
+              id: passwordField
+              width: parent.width
+              foreground: root.foreground
+              password: true
+              placeholderText: "Password (only if MPD asks for one)"
+              onTextChanged: if (activeFocus) root.passwordEdited = true
+              onAccepted: {
+                root.passwordEdited = false
+                root.persist("password", text)
+              }
+              onEditingFinished: {
+                if (!root.passwordEdited) return
+                root.passwordEdited = false
+                if (text !== root.passwordSetting) root.persist("password", text)
+              }
+            }
+
+            Flow {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Button {
+                text: "Reconnect"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: if (root.service) root.service.reconnect()
+              }
+
+              Button {
+                text: root.scanning ? "Scanning…" : "Update database"
+                bordered: true
+                enabled: root.connected && !root.scanning
+                opacity: enabled ? 1.0 : 0.4
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: if (root.service) root.service.updateDatabase()
+              }
+
+              Button {
+                text: "Rescan everything"
+                bordered: true
+                enabled: root.connected && !root.scanning
+                opacity: enabled ? 1.0 : 0.4
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: if (root.service) root.service.rescanDatabase()
+              }
+            }
+          }
+
+          Column {
+            width: groups.wide
+            spacing: Style.space(10)
+
+            PanelSectionHeader {
+              text: "NOTES"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Text {
+              width: parent.width
+              text: "Empty follows $MPD_HOST, then 127.0.0.1. A path or an @name is a unix socket, and the port is ignored for those."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              visible: root.passwordSetting !== ""
+              width: parent.width
+              text: "Stored as plain text in shell.json, like every other shell setting. Leave it empty and set $MPD_HOST to password@host to keep it in your environment."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              text: root.scanning
+                ? "MPD is reading the library. It says nothing about how far along it is, only that it is still going."
+                : "Update reads the files whose timestamps changed, after adding a record. Rescan re-reads every file, for tags edited in place. u and U do the same from anywhere in this window."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              visible: root.version !== ""
+              width: parent.width
+              text: "omajam v" + root.version
+              color: Qt.darker(root.foreground, 1.9)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
       }
     }
   }
