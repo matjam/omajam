@@ -70,6 +70,7 @@ Item {
   readonly property bool showArtSetting: setting("showArt", false) === true
   readonly property bool showSettingsButtonSetting: setting("showSettingsButton", true) === true
   readonly property string whenIdleSetting: String(setting("whenIdle", "icon")) === "hide" ? "hide" : "icon"
+  readonly property bool notifyTrackSetting: setting("notifyTrack", false) === true
   readonly property string wheelActionSetting: {
     var value = String(setting("wheelAction", "volume"))
     return ["volume", "seek", "track", "none"].indexOf(value) !== -1 ? value : "volume"
@@ -510,6 +511,16 @@ Item {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap
+        }
+
+        Toggle {
+          width: parent.width
+          label: "Notify on track change"
+          description: "A desktop notification with the cover, through the shell's own notifications."
+          checked: root.notifyTrackSetting
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: root.persist("notifyTrack", !root.notifyTrackSetting)
         }
 
         PanelSectionHeader {

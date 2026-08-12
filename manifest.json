@@ -36,7 +36,8 @@
       "showArt": false,
       "showSettingsButton": true,
       "whenIdle": "icon",
-      "wheelAction": "volume"
+      "wheelAction": "volume",
+      "notifyTrack": false
     },
     "schema": [
       {
@@ -140,6 +141,13 @@
         "label": "Scroll wheel",
         "defaultValue": "volume",
         "description": "volume, seek, track or none."
+      },
+      {
+        "key": "notifyTrack",
+        "type": "boolean",
+        "label": "Notify on track change",
+        "defaultValue": false,
+        "description": "A desktop notification with the cover when the track changes."
       }
     ]
   }

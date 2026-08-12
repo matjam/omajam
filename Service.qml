@@ -64,6 +64,7 @@ Item {
   readonly property string host: String(setting("host", "")).trim()
   readonly property int port: Math.max(0, Number(setting("port", 6600)) || 0)
   readonly property string password: String(setting("password", ""))
+  readonly property bool notifyTrack: setting("notifyTrack", false) === true
 
   // One string rather than three change handlers: a host and port edited in
   // the same breath should cost one reconnect, and QML collapses the two
@@ -87,7 +88,8 @@ Item {
   readonly property string playbackState: String(status.state || "stop")
   readonly property bool isPlaying: playbackState === "play"
   readonly property bool isPaused: playbackState === "pause"
-  readonly property bool hasSong: String(song.file || "") !== ""
+  readonly property string songFile: String(song.file || "")
+  readonly property bool hasSong: songFile !== ""
 
   // -1 means "this MPD has no mixer", which is a real state and not silence.
   readonly property int volume: status.volume === undefined ? -1 : Number(status.volume)
@@ -157,6 +159,74 @@ Item {
     repeat: true
     running: root.isPlaying
     onTriggered: root.nowMs = Date.now()
+  }
+
+  // ========================================================= track toasts
+  //
+  // A desktop notification rather than a window of this plugin's own: the shell
+  // is the notification server, so this arrives styled like everything else,
+  // lands where the user put their notifications, and obeys do-not-disturb.
+  //
+  // `lastToastFile` doubles as the arm: it is set without notifying for the
+  // first song seen on a connection, so restarting the shell mid-album does not
+  // announce what was already playing.
+  property string lastToastFile: ""
+  property int lastToastId: 0
+
+  onSongFileChanged: {
+    if (songFile === "" || !connected || !notifyTrack) {
+      lastToastFile = songFile
+      return
+    }
+    var first = lastToastFile === ""
+    lastToastFile = songFile
+    if (first || !isPlaying) return
+    // The art arrives in its own event, usually a moment after the song does.
+    // Waiting for it costs a beat and buys a cover on the toast.
+    toastDelay.restart()
+  }
+
+  Timer {
+    id: toastDelay
+    interval: 700
+    repeat: false
+    onTriggered: root.sendToast()
+  }
+
+  function sendToast() {
+    if (!notifyTrack || !isPlaying || songFile === "") return
+    // One at a time. Tracks are minutes apart; a toast still being written is a
+    // reason to skip rather than to queue.
+    if (toastProc.running) return
+
+    var title = songTitle(song)
+    var parts = []
+    if (String(song.artist || "") !== "") parts.push(String(song.artist))
+    if (String(song.album || "") !== "") parts.push(String(song.album))
+
+    var command = ["notify-send", "-a", "omajam", "-p", "-t", "5000",
+                   "-h", "string:x-canonical-private-synchronous:omajam"]
+    // Replacing the previous toast rather than stacking one per track.
+    if (lastToastId > 0) command = command.concat(["-r", String(lastToastId)])
+    if (artPath !== "" && artUri === songFile)
+      command = command.concat(["-i", artPath, "-h", "string:image-path:file://" + artPath])
+    command = command.concat([title === "" ? "Now playing" : title, parts.join("  ·  ")])
+
+    toastProc.command = command
+    toastProc.running = true
+  }
+
+  Process {
+    id: toastProc
+    // notify-send -p prints the id it was given, which is what makes the next
+    // toast replace this one instead of piling up beneath it.
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var id = parseInt(String(text || "").trim())
+        if (id > 0) root.lastToastId = id
+      }
+    }
   }
 
   // ============================================================ the queue

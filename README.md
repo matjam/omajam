@@ -20,6 +20,7 @@ queue, your library, your playlists and a search box, laid out like
 - Bar label in mpc's format dialect, with a live preview in the settings tab.
 - Driven by MPD's `idle` push, so nothing polls.
 - TCP or unix socket, with a password, or whatever `$MPD_HOST` says.
+- Optional notification on track change, with the cover.
 - Reconnects on its own, and shows the server's error while it can't.
 - Scriptable through `omarchy-shell`.
 
@@ -124,6 +125,12 @@ the host field is empty.
 
 **In the bar** — label width, scroll or elide, which parts of the strip to
 show, what to do when nothing is playing, and what the scroll wheel does.
+
+**Notify on track change** — off by default. Sends a desktop notification with
+the cover, the title and the artist and album, through the shell's own
+notification server, so it lands where your notifications go and respects
+do-not-disturb. Each one replaces the last rather than stacking, and nothing is
+announced for the song already playing when the shell starts.
 
 MPD's own playback options aren't here: repeat, random, single and consume are
 glyphs in the window's header, and `z`/`x`/`c`/`v` from anywhere in it.
