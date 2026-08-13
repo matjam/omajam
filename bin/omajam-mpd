@@ -678,8 +678,13 @@ class Bridge:
         """Run fn against the command connection, or return None if it fails.
 
         A protocol ACK is the command's problem and leaves the connection
-        alone; anything else means the connection is gone, which drops both
-        sockets and lets the manager reconnect.
+        alone. A dead socket is not necessarily a dead server: MPD closes a
+        connection after connection_timeout, 60 seconds by default, and a
+        minute with no button pressed and nothing changing server-side is the
+        ordinary state of a paused player rather than a fault. So a broken
+        connection is reconnected and the command run once more; only if that
+        also fails is the connection given up on, which drops both sockets and
+        lets the manager start again.
         """
         with self.cmd_lock:
             conn = self.cmd
@@ -691,8 +696,21 @@ class Bridge:
                 self.emit({"event": "ack", "error": str(exc)})
                 return None
             except (MPDError, OSError) as exc:
-                self.cmd = None
                 conn.close()
+                self.cmd = None
+
+                replacement = self.reconnect_cmd()
+                if replacement is not None:
+                    try:
+                        return fn(replacement)
+                    except MPDCommandError as retry_exc:
+                        self.emit({"event": "ack", "error": str(retry_exc)})
+                        return None
+                    except (MPDError, OSError) as retry_exc:
+                        replacement.close()
+                        self.cmd = None
+                        exc = retry_exc
+
                 error = error_text(exc) or "connection lost"
                 # Unblocks the manager's idle read so it reconnects at once
                 # rather than at the next server-side event.
@@ -702,6 +720,17 @@ class Bridge:
                 self.connected = False
                 self.emit({"event": "disconnected", "error": error})
                 return None
+
+    def reconnect_cmd(self):
+        """A fresh command socket, or None. The caller holds cmd_lock."""
+        try:
+            conn = MPDConn(self.target, self.password)
+            conn.connect()
+            conn.sock.settimeout(CMD_TIMEOUT)
+        except (MPDError, OSError):
+            return None
+        self.cmd = conn
+        return conn
 
     def refresh(self) -> None:
         """Read state and announce it, coalescing concurrent callers.
@@ -959,29 +988,47 @@ class Bridge:
             "kind": kind,
             "channel": request.get("channel", ""),
         }
-        conn = None
-        try:
-            conn = self.query_conn_for(generation)
-            rows = self.execute_query(conn, kind, request)
-            answer["rows"] = rows
-            # The pane says so rather than quietly showing a prefix of the
-            # answer as though it were all of it.
+
+        # Two attempts, because the query connection is held open between
+        # questions and MPD closes an idle one after connection_timeout -- 60
+        # seconds by default. The first browse after a pause would otherwise
+        # report "connection closed by server" for whichever tab was opened
+        # first, and work from then on, which is a confusing way to say that a
+        # socket had gone stale. A reconnect costs a round trip; the error cost
+        # a tab.
+        for attempt in (0, 1):
+            conn = None
             try:
-                if request.get("limit") and len(rows) >= int(request["limit"]):
-                    answer["truncated"] = True
-            except (TypeError, ValueError):
-                pass
-        except MPDCommandError as exc:
-            # The server understood and refused: an unknown playlist, a filter
-            # it does not like. The connection is fine and the client wants to
-            # hear about it in the pane it asked from.
-            answer["rows"] = []
-            answer["error"] = str(exc)
-        except (MPDError, OSError) as exc:
-            if conn is not None:
-                self.drop_query_conn(conn)
-            answer["rows"] = []
-            answer["error"] = error_text(exc)
+                conn = self.query_conn_for(generation)
+                rows = self.execute_query(conn, kind, request)
+                answer["rows"] = rows
+                answer.pop("error", None)
+                # The pane says so rather than quietly showing a prefix of the
+                # answer as though it were all of it.
+                try:
+                    if request.get("limit") and len(rows) >= int(request["limit"]):
+                        answer["truncated"] = True
+                except (TypeError, ValueError):
+                    pass
+                break
+            except MPDCommandError as exc:
+                # The server understood and refused: an unknown playlist, a
+                # filter it does not like. The connection is fine, the answer
+                # will not change on a second ask, and the pane wants to hear
+                # about it.
+                answer["rows"] = []
+                answer["error"] = str(exc)
+                break
+            except (MPDError, OSError) as exc:
+                if conn is not None:
+                    self.drop_query_conn(conn)
+                answer["rows"] = []
+                answer["error"] = error_text(exc)
+                if generation != self.generation or self.stop.is_set():
+                    break
+                # The second attempt starts from a fresh socket. If that fails
+                # too, the server really is unreachable and the error stands.
+
         if generation == self.generation and not self.stop.is_set():
             self.emit(answer)
 
