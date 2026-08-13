@@ -113,6 +113,21 @@ Panel {
     return shell[name](moduleName) !== false
   }
 
+  // The window of whichever copy of this widget the shell would act on: the one
+  // already open, else the one on the focused monitor. IPC arrives at a single
+  // copy -- whichever registered the target -- so without this, `key` and
+  // `state` would drive a different window from the one `show` opened, on a
+  // different monitor, with its panes never loaded.
+  readonly property var panel: clientPanel
+
+  function targetPanel() {
+    if (bar && typeof bar.findPanelWidget === "function") {
+      var item = bar.findPanelWidget(moduleName)
+      if (item && item.panel) return item.panel
+    }
+    return clientPanel
+  }
+
   function openClient() { if (!viaShell("summon")) open() }
   function closeClient() { if (!viaShell("hide")) close() }
   function toggleClient() { if (!viaShell("toggle")) toggle() }
@@ -167,6 +182,7 @@ Panel {
     // up, down, left, right, space, pgup, pgdn, home, end. Only meaningful
     // while the window is open.
     function key(text: string): void {
+      var panel = root.targetPanel()
       var name = String(text)
       var named = {
         esc: Qt.Key_Escape, escape: Qt.Key_Escape, enter: Qt.Key_Return,
@@ -176,7 +192,7 @@ Panel {
         home: Qt.Key_Home, end: Qt.Key_End
       }
       var code = named[name.toLowerCase()]
-      clientPanel.handleKey({
+      panel.handleKey({
         key: code === undefined ? 0 : code,
         text: code === undefined ? name : "",
         modifiers: 0,
@@ -187,19 +203,20 @@ Panel {
     // What the window is showing, for a script -- and for working out why it is
     // showing that.
     function state(): string {
-      var list = clientPanel.paneList()
-      var view = clientPanel.pane()
+      var panel = root.targetPanel()
+      var list = panel.paneList()
+      var view = panel.pane()
       return JSON.stringify({
         service: !!root.service,
         connected: root.connected,
-        open: root.clientOpen,
-        tab: clientPanel.tab,
+        open: panel.open,
+        tab: panel.tab,
         rows: list ? list.count : -1,
         cursor: list ? list.currentIndex : -1,
         marked: list ? list.markedCount : -1,
         levels: (view && view.levels !== undefined) ? view.levels.length : -1,
         databaseVersion: root.service ? root.service.databaseVersion : -1,
-        finding: clientPanel.finding,
+        finding: panel.finding,
         row: list ? list.currentRow : null
       })
     }
