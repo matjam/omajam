@@ -217,6 +217,15 @@ Panel {
         levels: (view && view.levels !== undefined) ? view.levels.length : -1,
         databaseVersion: root.service ? root.service.databaseVersion : -1,
         finding: panel.finding,
+        // What the strip itself is showing, which is the other half of any
+        // question about this widget.
+        strip: {
+          "label": root.label,
+          "art": root.artSource,
+          "showArt": root.showArt,
+          "hasSong": root.hasSong,
+          "stripWidth": root.implicitWidth
+        },
         row: list ? list.currentRow : null
       })
     }

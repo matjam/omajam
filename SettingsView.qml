@@ -332,7 +332,15 @@ Item {
           id: formatSave
           interval: 500
           repeat: false
-          onTriggered: if (root.formatEdited) root.persist("format", formatField.text)
+          onTriggered: {
+            if (!root.formatEdited) return
+            // Never from empty. Clearing the field is a step on the way to
+            // typing a new format, and the bar losing its label because typing
+            // paused is not what saving-as-you-type was for. Enter and moving
+            // focus away still commit it, since those are decisions.
+            if (formatField.text === "") return
+            root.persist("format", formatField.text)
+          }
         }
 
         // ═════════════════════════════════════════════════════════════ bar
