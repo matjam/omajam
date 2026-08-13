@@ -229,7 +229,8 @@ Panel {
           "art": root.artSource,
           "showArt": root.showArt,
           "hasSong": root.hasSong,
-          "stripWidth": root.implicitWidth
+          "stripWidth": root.implicitWidth,
+          "artIsTheIcon": root.artIsTheIcon
         },
         row: list ? list.currentRow : null
       })
@@ -304,8 +305,11 @@ Panel {
         Text {
           id: glyph
           // Kept when idle even if the user turned it off, because idle is
-          // exactly when it is the only thing left to click on.
+          // exactly when it is the only thing left to click on -- and kept for
+          // the same reason when the cover is carrying the widget and this
+          // track's album has no cover to carry it with.
           visible: root.showStateIcon || root.idle
+                   || (root.artIsTheIcon && root.artSource === "")
           anchors.verticalCenter: parent.verticalCenter
           text: root.stateGlyph
           color: root.playing ? root.fg : Qt.darker(root.fg, 1.5)
