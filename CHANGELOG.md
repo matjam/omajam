@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.1](https://github.com/matjam/omajam/compare/v1.1.0...v1.1.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* point key and state at the window the shell would act on ([f9e7e1b](https://github.com/matjam/omajam/commit/f9e7e1ba50e68e176e3a3aab7161364d887d45c2))
+* re-assert keyboard focus while the window settles ([4904331](https://github.com/matjam/omajam/commit/4904331e14f214fb88002ae71ba8463a4443fd0e))
+* survive MPD closing an idle connection ([78ca96e](https://github.com/matjam/omajam/commit/78ca96e434aa47dbe00a62f88411c7d95c7ec42d))
+
 ## [1.1.0](https://github.com/matjam/omajam/compare/v1.0.0...v1.1.0) (2026-08-12)
 
 
