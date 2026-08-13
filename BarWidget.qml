@@ -281,7 +281,7 @@ Panel {
         // strip to the width of the glyph.
         Rectangle {
           id: thumb
-          visible: root.showArt && root.hasSong && root.artSource !== ""
+          visible: root.showArt && root.hasSong
           implicitWidth: Math.round(root.barSize * (root.artIsTheIcon ? 0.78 : 0.62))
           implicitHeight: implicitWidth
           radius: Style.cornerRadius > 0 ? Style.space(2) : 0
@@ -293,23 +293,42 @@ Panel {
           // a 1400px scan decoded to fill sixteen pixels would cost megabytes
           // to draw something the size of a fingernail.
           Image {
+            id: cover
             anchors.fill: parent
+            visible: status === Image.Ready
             source: root.artSource
             fillMode: Image.PreserveAspectCrop
             asynchronous: true
             cache: true
             sourceSize.width: 64
           }
+
+          // An album with no artwork still gets the square, so the strip keeps
+          // its shape and the button stays the size and place it was. This is
+          // the same stand-in the window draws, at the size of a bar icon.
+          Rectangle {
+            anchors.fill: parent
+            visible: !cover.visible
+            color: "transparent"
+            border.width: Style.normalBorderWidth
+            border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.35)
+            radius: parent.radius
+
+            Text {
+              anchors.centerIn: parent
+              text: "󰝚"
+              color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.55)
+              font.family: root.fontFamily
+              font.pixelSize: Math.round(parent.height * 0.58)
+            }
+          }
         }
 
         Text {
           id: glyph
           // Kept when idle even if the user turned it off, because idle is
-          // exactly when it is the only thing left to click on -- and kept for
-          // the same reason when the cover is carrying the widget and this
-          // track's album has no cover to carry it with.
+          // exactly when it is the only thing left to click on.
           visible: root.showStateIcon || root.idle
-                   || (root.artIsTheIcon && root.artSource === "")
           anchors.verticalCenter: parent.verticalCenter
           text: root.stateGlyph
           color: root.playing ? root.fg : Qt.darker(root.fg, 1.5)
