@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "matjam.omajam",
   "name": "omajam",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "Nathan Ollerenshaw (matjam)",
   "description": "A full MPD client for the Omarchy bar. The queue, the library, stored playlists and search in one keyboard-driven window styled after rmpc, with what is playing in the bar beside it. Talks the MPD protocol directly over TCP or a unix socket, so state arrives as the server pushes it rather than on a poll.",
   "license": "MIT",
