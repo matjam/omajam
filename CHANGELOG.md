@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.2.0](https://github.com/matjam/omajam/compare/v1.1.1...v1.2.0) (2026-08-13)
+
+
+### Features
+
+* let the cover be the widget's icon ([33787dd](https://github.com/matjam/omajam/commit/33787ddb81160551995084f0c0ef0ca40b79ae32))
+* show the song itself in the browser's third column ([36ed7ef](https://github.com/matjam/omajam/commit/36ed7ef0cba43df1b3703e98951919df1aae7641))
+* step in and out of the browser with the mouse ([711491a](https://github.com/matjam/omajam/commit/711491a626357c6de1ca7645bb9dcac4c9a101b6))
+
+
+### Bug Fixes
+
+* fall back to the no-art square rather than to a glyph ([a162cd1](https://github.com/matjam/omajam/commit/a162cd1a451abe949495a662ef3992fd84a98f26))
+* keep an icon when the cover is the icon and there is no cover ([1ea27eb](https://github.com/matjam/omajam/commit/1ea27eb698a99a658e348d7d7e28aeaf0f40ca38))
+* never save an empty label format from the typing timer ([4477ff2](https://github.com/matjam/omajam/commit/4477ff211f4f802ebb9afb4e74ceb40d33791908))
+
 ## [1.1.1](https://github.com/matjam/omajam/compare/v1.1.0...v1.1.1) (2026-08-13)
 
 
