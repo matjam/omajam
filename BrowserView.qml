@@ -267,6 +267,29 @@ Item {
     else refreshPreview()
   }
 
+  // A click in the column on the right steps into it and lands on that row --
+  // the same thing `l` does, with the destination chosen by the pointer. The
+  // preview is already holding the rows, so this costs no query.
+  function descendTo(index) {
+    var level = currentLevel
+    if (!level || !level.rows || level.rows.length === 0) return
+    if (!childKindOf(level, level.rows[level.index])) return
+    descend()
+    if (levels.length === 0) return
+    setLevel(levels.length - 1, { index: Math.max(0, index) })
+    Qt.callLater(restoreCursor)
+    refreshPreview()
+  }
+
+  // And a click in the column on the left steps back out to that row.
+  function ascendTo(index) {
+    if (levels.length <= 1) return
+    levels = levels.slice(0, levels.length - 1)
+    setLevel(levels.length - 1, { index: Math.max(0, index) })
+    Qt.callLater(restoreCursor)
+    refreshPreview()
+  }
+
   function ascend() {
     if (levels.length <= 1) return
     levels = levels.slice(0, levels.length - 1)
@@ -373,7 +396,8 @@ Item {
         columns: root.columnsFor(root.parentLevel)
         currentIndex: root.parentLevel ? Number(root.parentLevel.index || 0) : 0
         focused: false
-        clickable: false
+        selectOnClick: false
+        onRowClicked: function(index) { root.ascendTo(index) }
         showHeader: false
         emptyText: ""
         fontFamily: root.fontFamily
@@ -452,7 +476,11 @@ Item {
         }
         currentIndex: -1
         focused: false
-        clickable: false
+        selectOnClick: false
+        onRowClicked: function(index) { root.descendTo(index) }
+        // A double-click steps in and plays, since the first click has already
+        // put the cursor on the row.
+        onActivated: root.activate()
         showHeader: false
         loading: root.previewLoading
         emptyText: ""

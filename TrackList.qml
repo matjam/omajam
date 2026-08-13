@@ -40,10 +40,12 @@ Item {
   // A list that does not have the keyboard draws a dimmer cursor -- the browser
   // shows three of these side by side and only one of them is being driven.
   property bool focused: true
-  // A list that is only being shown -- the browser's two side columns -- takes
-  // no clicks: moving its cursor would say something about a level nobody is
-  // driving, and would break the binding that keeps it truthful.
   property bool clickable: true
+  // Whether a click moves this list's own cursor. The browser's side columns
+  // take clicks but do not move: a click there means step into that column, or
+  // back out to it, and the cursor that matters afterwards belongs to whichever
+  // list the step landed on.
+  property bool selectOnClick: true
   property bool loading: false
   property string emptyText: "Empty"
   // Every one of these is a theme decision rather than this plugin's. The font
@@ -75,6 +77,9 @@ Item {
 
   signal activated(int index)
   signal descended(int index)   // right-click -- into a directory, an album
+  // Raised before anything moves, so a caller can take the click and do
+  // something other than select with it.
+  signal rowClicked(int index)
   // Any move of the cursor, whether a key did it or a caller assigned it. The
   // browser stores it on the level it belongs to and fetches a fresh preview,
   // and both of those are wanted for a restored cursor as much as for a typed
@@ -455,7 +460,8 @@ Item {
         enabled: root.clickable
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         onClicked: function(mouse) {
-          root.moveTo(rowItem.index)
+          root.rowClicked(rowItem.index)
+          if (root.selectOnClick) root.moveTo(rowItem.index)
           if (mouse.button === Qt.RightButton) root.descended(rowItem.index)
         }
         onDoubleClicked: root.activated(rowItem.index)
