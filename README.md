@@ -16,7 +16,8 @@ queue, your library, your playlists and a search box, laid out like
 - Nine tabs — queue, directories, artists, album artists, albums, genre,
   playlists, search, settings — with the cover and progress bar always visible.
 - rmpc's default keybindings. `?` lists them.
-- Three-column library browser, with the preview column fetched ahead.
+- Three-column library browser, with the preview column fetched ahead. On a
+  song it shows the cover and every tag the server holds.
 - Bar label in mpc's format dialect, with a live preview in the settings tab.
 - Driven by MPD's `idle` push, so nothing polls.
 - TCP or unix socket, with a password, or whatever `$MPD_HOST` says.

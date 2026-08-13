@@ -42,6 +42,14 @@ Item {
   property var previewRows: []
   property bool previewLoading: false
 
+  // When the cursor is on a song there is no list behind it, so the third
+  // column shows the song itself instead: its cover, and every tag the server
+  // holds. Both are fetched on their own channels, so walking a track listing
+  // costs one of each at the pace of the cursor rather than one per row.
+  property var previewSong: null
+  property string previewArt: ""
+  readonly property bool showingSong: previewSong !== null
+
   readonly property var currentLevel: levels.length > 0 ? levels[levels.length - 1] : null
   readonly property var parentLevel: levels.length > 1 ? levels[levels.length - 2] : null
   readonly property bool hasParent: !!parentLevel
@@ -236,8 +244,11 @@ Item {
     if (!child) {
       previewRows = []
       previewLoading = false
+      fetchSong(row)
       return
     }
+    previewSong = null
+    previewArt = ""
     var args = ({})
     for (var key in child.args) args[key] = child.args[key]
     args.channel = "preview-" + mode
@@ -246,6 +257,34 @@ Item {
     service.request(child.kind, args, function(rows) {
       root.previewLoading = false
       root.previewRows = rows
+    })
+  }
+
+  // The song under the cursor, in full. The row already in hand carries only
+  // the fields the list needed; this asks for the rest, and for a cover.
+  function fetchSong(row) {
+    if (!row || String(row.type || "") !== "file" || !row.file) {
+      previewSong = null
+      previewArt = ""
+      return
+    }
+    // Show what is already known while the rest arrives, so the pane fills
+    // immediately rather than blinking.
+    previewSong = row
+    previewArt = ""
+    var uri = String(row.file)
+
+    service.request("songinfo", { file: uri, channel: "songinfo-" + mode },
+                    function(rows) {
+      if (rows.length > 0 && root.previewSong && String(root.previewSong.file || "") === uri)
+        root.previewSong = rows[0]
+    })
+
+    service.request("art", { uri: uri, album: String(row.album || ""),
+                             albumartist: String(row.albumartist || ""),
+                             channel: "songart-" + mode }, function(rows) {
+      if (rows.length > 0 && root.previewSong && String(root.previewSong.file || "") === uri)
+        root.previewArt = String(rows[0].path || "")
     })
   }
 
@@ -462,9 +501,23 @@ Item {
       width: Math.round(root.width * (root.hasParent ? 0.40 : 0.50))
       height: parent.height
 
+      SongInfo {
+        anchors.fill: parent
+        anchors.leftMargin: Style.space(8)
+        visible: root.showingSong
+        song: root.previewSong || ({})
+        artPath: root.previewArt
+        loading: root.previewLoading
+        fontFamily: root.fontFamily
+        fontSize: root.fontSize
+        foreground: root.foreground
+        accent: root.accent
+      }
+
       TrackList {
         anchors.fill: parent
         anchors.leftMargin: Style.space(8)
+        visible: !root.showingSong
         rows: root.previewRows
         // Asked of `childKindOf` rather than of `childLevel`: building a level
         // stamps it with a token, and a binding that writes a property it also

@@ -48,6 +48,8 @@ QUERIES (the "kind" key of `query`):
     list {tag,filter}         distinct values of a tag, optionally filtered
     find {filter,sort}        songs matching an exact-match filter
     search {term}             songs matching a substring of any tag
+    songinfo {file}           every tag MPD holds for one song
+    art {uri}                 the cover for one song, cached
     listplaylists             stored playlists
     playlist {name}           one stored playlist's songs
 
@@ -964,6 +966,14 @@ class Bridge:
         conn = MPDConn(self.target, self.password)
         conn.connect()
         conn.sock.settimeout(CMD_TIMEOUT)
+        # This connection answers `art` as well as the list queries, and a cover
+        # arrives in chunks of binarylimit bytes -- 8KB by default, which is 400
+        # round trips for a 3MB scan. Servers older than 0.22 reject the command
+        # and keep their default.
+        try:
+            conn.command("binarylimit", ART_CHUNK)
+        except MPDCommandError:
+            pass
         with self.query_cv:
             # A config change while this was connecting retires it before it
             # ever answers anything.
@@ -1108,6 +1118,42 @@ class Bridge:
                 args = ["any", term]
             return split_entries(conn.command("search", *args)[0],
                                  markers=("file",), fields=SONG_FIELDS, limit=limit)
+
+        if kind == "songinfo":
+            # One song, every tag it has. The browsing queries whitelist fields
+            # because they carry ten thousand rows; this one carries a single
+            # row that a person is reading, so it keeps everything MPD sends --
+            # labels, MusicBrainz ids, sort names, the audio format.
+            uri = str(request.get("file", ""))
+            if not uri:
+                return []
+            args = self.filter_args(conn, [["file", uri]])
+            return split_entries(conn.command("find", *args)[0],
+                                 markers=("file",), fields=None, limit=1)
+
+        if kind == "art":
+            # The cover for any song, not just the one playing. Same cache and
+            # the same key -- by album rather than by track -- so browsing an
+            # album the player already fetched costs nothing.
+            uri = str(request.get("uri", ""))
+            if not uri:
+                return []
+            key = art_key({
+                "file": uri,
+                "album": str(request.get("album", "")),
+                "albumartist": str(request.get("albumartist", "")),
+            })
+            path = cached_art(key)
+            if not path:
+                data, mime = fetch_art(conn, uri)
+                if data:
+                    path = os.path.join(cache_dir(), key + extension_for(data, mime))
+                    tmp = path + ".part"
+                    with open(tmp, "wb") as handle:
+                        handle.write(data)
+                    os.replace(tmp, path)
+                    prune_cache()
+            return [{"type": "art", "path": path}]
 
         if kind == "listplaylists":
             rows = split_entries(conn.command("listplaylists")[0], markers=("playlist",),
