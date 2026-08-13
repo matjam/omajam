@@ -65,6 +65,11 @@ Panel {
 
   readonly property string label: hasSong ? Format.render(format, service.tokens) : ""
 
+  // The cover carrying the widget on its own: no label, no play glyph. It then
+  // stands in for the icon every other bar widget has, and an icon the size of
+  // a postage stamp is not one. Set the format to nothing to get here.
+  readonly property bool artIsTheIcon: showArt && !showStateIcon && label === ""
+
   readonly property string stateGlyph: {
     if (!connected) return "󰝛"
     if (!service.hasSong) return "󰝚"
@@ -276,7 +281,7 @@ Panel {
         Rectangle {
           id: thumb
           visible: root.showArt && root.hasSong && root.artSource !== ""
-          implicitWidth: Math.round(root.barSize * 0.62)
+          implicitWidth: Math.round(root.barSize * (root.artIsTheIcon ? 0.78 : 0.62))
           implicitHeight: implicitWidth
           radius: Style.cornerRadius > 0 ? Style.space(2) : 0
           color: "transparent"

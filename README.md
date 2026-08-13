@@ -126,6 +126,12 @@ the host field is empty.
 **In the bar** — label width, scroll or elide, which parts of the strip to
 show, what to do when nothing is playing, and what the scroll wheel does.
 
+For the cover alone as the widget's icon, turn the cover thumbnail on, the play
+state glyph off, and clear the label format. The cover then sizes up to stand
+in for the icon other widgets have, and the glyph comes back on its own when
+nothing is playing. Right-click still opens the settings, so the cog can go
+too.
+
 **Notify on track change** — off by default. Sends a desktop notification with
 the cover, the title and the artist and album, through the shell's own
 notification server, so it lands where your notifications go and respects
