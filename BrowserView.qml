@@ -379,9 +379,19 @@ Item {
     if (!service || !level) return
     if (level.kind === "lsinfo") service.addUri(level.path)
     else if (level.kind === "playlist") service.loadPlaylist(level.path)
+    else if (level.kind === "listplaylists") {
+      var rows = level.rows || []
+      for (var i = 0; i < rows.length; i++) {
+        if (String(rows[i].type || "") === "playlist")
+          service.loadPlaylist(String(rows[i].playlist || ""))
+      }
+    }
     else if (level.filter && level.filter.length > 0) service.addFilter(level.filter)
-    // A tag list with no filter behind it is the whole library, which is not
-    // something to do because a capital letter was pressed.
+    // A tag list with no filter behind it is every song there is, and the empty
+    // uri is how MPD spells the root of the database -- so `A` at the top of a
+    // tab is the whole library, which is what rmpc's does too. The Directories
+    // tab arrives here with an empty path and means the same thing.
+    else service.addUri("")
   }
 
   function activate() {

@@ -91,6 +91,10 @@ the results. `tab` still switches tabs from inside it.
 `a` acts on the marked rows, or the row under the cursor when none are marked.
 Adding an artist or album sends one filter rather than a line per song.
 
+`A` at the top of a tab is everything the tab lists: the whole library from
+Directories, Artists, Albums or Genre, every stored playlist from Playlists.
+`A` then `x` is everything on random, and so is `omarchy-shell -q mpd playall`.
+
 Mouse: click to select, double-click to play, click the progress bar to seek,
 click the header glyphs to toggle playback options. The wheel moves ten rows a
 notch, and the scrollbar can be dragged.
@@ -194,6 +198,7 @@ omarchy-shell -q mpd seek 90         # absolute, in seconds
 omarchy-shell -q mpd option random   # repeat, random, single, consume
 omarchy-shell -q mpd clear           # and shuffle, crop
 omarchy-shell -q mpd add "Wire/Pink Flag"
+omarchy-shell -q mpd playall         # everything, on random
 omarchy-shell -q mpd load "Friday"   # a stored playlist
 omarchy-shell -q mpd update          # read the files that changed
 omarchy-shell -q mpd rescan          # re-read every file in the library

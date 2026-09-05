@@ -37,7 +37,7 @@ Input (stdin, one line each):
 
 COMMANDS (the "op" key of `cmd`):
     playid {id} | playpos {pos} | add {uri} | addplay {uri} | insert {uri}
-    findadd {filter} | findplay {filter}
+    findadd {filter} | findplay {filter} | playall
     remove {id} | move {from,to} | clear | shuffle | crop
     loadplaylist {name} | saveplaylist {name} | rmplaylist {name}
     renameplaylist {name,to} | playlistadd {name,uri}
@@ -822,11 +822,16 @@ class Bridge:
             one("playid", int(payload.get("id", 0)))
         elif op == "playpos":
             one("play", int(payload.get("pos", 0)))
-        elif op == "add" and uri:
+        elif op == "add":
+            # The empty uri is the root of the database, which is how MPD
+            # spells "all of it" -- so this is `A` at the top of a tab as well
+            # as one directory further down.
             one("add", uri)
-        elif op == "addplay" and uri:
+        elif op == "addplay":
             self.with_cmd(lambda conn: self.add_and_play(conn, uri))
         elif op == "insert" and uri:
+            # Unlike the two above: putting the whole library in behind the
+            # playing song is nothing anyone meant to ask for.
             self.with_cmd(lambda conn: self.add_after_current(conn, uri))
         elif op in ("findadd", "findplay"):
             # Everything matching a filter, in one command. The browser adds an
@@ -835,6 +840,8 @@ class Bridge:
             # nine hundred times.
             self.with_cmd(lambda conn: self.find_add(
                 conn, payload.get("filter") or [], op == "findplay"))
+        elif op == "playall":
+            self.with_cmd(self.play_everything)
         elif op == "remove":
             one("deleteid", int(payload.get("id", 0)))
         elif op == "move":
@@ -878,6 +885,22 @@ class Bridge:
         conn.command("add", uri)
         if self.queue_length(conn) > start:
             conn.command("play", start)
+        return True
+
+    def play_everything(self, conn: MPDConn) -> bool:
+        """The whole library, in a random order, from nothing.
+
+        The four things a person does by hand to put a record collection on
+        shuffle, in the order that avoids playing the first song alphabetically
+        for a moment before the shuffle catches up.
+        """
+        conn.command("clear")
+        conn.command("add", "")
+        conn.command("random", 1)
+        # An empty library leaves an empty queue, and `play 0` on one is an ACK
+        # rather than silence.
+        if self.queue_length(conn) > 0:
+            conn.command("play", 0)
         return True
 
     def add_after_current(self, conn: MPDConn, uri: str) -> bool:

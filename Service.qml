@@ -395,6 +395,9 @@ Item {
   function insertUri(uri) { command("insert", { uri: String(uri) }) }
   function addFilter(filter) { command("findadd", { filter: filter }) }
   function addFilterAndPlay(filter) { command("findplay", { filter: filter }) }
+  // The whole library on random, from wherever the queue was: one command
+  // rather than four, so nothing plays alphabetically in the gap between them.
+  function playAll() { command("playall") }
   function removeId(id) { command("remove", { id: Number(id) }) }
   function moveSong(from, to) { command("move", { from: Number(from), to: Number(to) }) }
   function clearQueue() { command("clear") }
@@ -653,6 +656,7 @@ Item {
     function shuffle(): string { root.shuffleQueue(); return "ok" }
     function crop(): string { root.cropQueue(); return "ok" }
     function add(uri: string): string { root.addUri(String(uri)); return "ok" }
+    function playall(): string { root.playAll(); return "ok" }
     function load(name: string): string { root.loadPlaylist(String(name)); return "ok" }
     function save(name: string): string { root.savePlaylist(String(name)); return "ok" }
 
