@@ -358,12 +358,20 @@ Item {
 
   function send(line) {
     if (!bridge.running) return
-    // Every command passes through here, so this is where a stale complaint
-    // goes: whatever the last one was refused for, the user has moved on and
-    // asked for something else. Not while disconnected, where the text is the
-    // reason the widget is showing for being offline.
-    if (connected) lastError = ""
     bridge.write(String(line) + "\n")
+  }
+
+  // Everything the user asked for, as opposed to everything the plugin says
+  // down the pipe. A stale complaint goes here: whatever the last command was
+  // refused for, they have moved on and asked for something else. Not while
+  // disconnected, where the text is the reason the widget is showing for being
+  // offline -- and not on `send` itself, which also carries the browser's
+  // queries. Those are the panel looking around, not a person acting, and a
+  // preview column fetched because a cursor came to rest should not answer for
+  // the keypress before it.
+  function issue(line) {
+    if (connected) lastError = ""
+    send(line)
   }
 
   function sendConfig() {
@@ -372,17 +380,17 @@ Item {
     send("config " + JSON.stringify({ host: host, port: port, password: password }))
   }
 
-  function toggle() { send("toggle") }
-  function play() { send("play") }
-  function pause() { send("pause") }
-  function stop() { send("stop") }
-  function next() { send("next") }
-  function previous() { send("prev") }
+  function toggle() { issue("toggle") }
+  function play() { issue("play") }
+  function pause() { issue("pause") }
+  function stop() { issue("stop") }
+  function next() { issue("next") }
+  function previous() { issue("prev") }
 
-  function seek(seconds) { send("seek " + Math.max(0, Number(seconds) || 0)) }
+  function seek(seconds) { issue("seek " + Math.max(0, Number(seconds) || 0)) }
 
   function setVolume(value) {
-    send("volume " + Math.round(Math.max(0, Math.min(100, Number(value) || 0))))
+    issue("volume " + Math.round(Math.max(0, Math.min(100, Number(value) || 0))))
   }
 
   function nudgeVolume(delta) {
@@ -390,7 +398,7 @@ Item {
     setVolume(volume + delta)
   }
 
-  function setOption(name, value) { send("setopt " + name + " " + value) }
+  function setOption(name, value) { issue("setopt " + name + " " + value) }
 
   function toggleOption(name) {
     if (name === "repeat") setOption("repeat", repeatOn ? "0" : "1")
@@ -400,9 +408,9 @@ Item {
     else if (name === "single") setOption("single", singleMode === "0" ? "1" : (singleMode === "1" ? "oneshot" : "0"))
   }
 
-  function updateDatabase() { send("update") }
-  function rescanDatabase() { send("rescan") }
-  function refresh() { send("refresh") }
+  function updateDatabase() { issue("update") }
+  function rescanDatabase() { issue("rescan") }
+  function refresh() { issue("refresh") }
 
   // ------------------------------------------------- queue and playlists
 
@@ -412,7 +420,7 @@ Item {
       for (var key in args) payload[key] = args[key]
     }
     payload.op = String(op)
-    send("cmd " + JSON.stringify(payload))
+    issue("cmd " + JSON.stringify(payload))
   }
 
   function playId(id) { command("playid", { id: Number(id) }) }
