@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.2.0](https://github.com/matjam/omajam/compare/v1.1.1...v1.2.0) (2026-09-05)
+
+
+### Features
+
+* add the whole library from the top of any tab ([20f4a0a](https://github.com/matjam/omajam/commit/20f4a0a7cde7f751dae5b900da43b963aa017655))
+* let the cover be the widget's icon ([33787dd](https://github.com/matjam/omajam/commit/33787ddb81160551995084f0c0ef0ca40b79ae32))
+* save, rename and edit stored playlists ([43b470c](https://github.com/matjam/omajam/commit/43b470c2c58195e41d75ee11567bd076be3cd74e))
+* show the song itself in the browser's third column ([36ed7ef](https://github.com/matjam/omajam/commit/36ed7ef0cba43df1b3703e98951919df1aae7641))
+* step in and out of the browser with the mouse ([711491a](https://github.com/matjam/omajam/commit/711491a626357c6de1ca7645bb9dcac4c9a101b6))
+
+
+### Bug Fixes
+
+* fall back to the no-art square rather than to a glyph ([a162cd1](https://github.com/matjam/omajam/commit/a162cd1a451abe949495a662ef3992fd84a98f26))
+* keep a browsing query from clearing the last error ([b2e5919](https://github.com/matjam/omajam/commit/b2e5919eac0fb12161ac2bb3e50c31104ef63f6d))
+* keep an icon when the cover is the icon and there is no cover ([1ea27eb](https://github.com/matjam/omajam/commit/1ea27eb698a99a658e348d7d7e28aeaf0f40ca38))
+* never save an empty label format from the typing timer ([4477ff2](https://github.com/matjam/omajam/commit/4477ff211f4f802ebb9afb4e74ceb40d33791908))
+* read big queues and results from MPD a page at a time ([4c26a94](https://github.com/matjam/omajam/commit/4c26a94b1fee2f483260eb5375cfa6331d79f0bc))
+* run queue mutations in the order they were sent ([257dd75](https://github.com/matjam/omajam/commit/257dd758894acfb76ee3576d070c7b58a396248f))
+* show a refused command while connected ([80ec03b](https://github.com/matjam/omajam/commit/80ec03b24df72803cea6318e8f9075f5e1383813))
+
 ## [1.1.1](https://github.com/matjam/omajam/compare/v1.1.0...v1.1.1) (2026-08-13)
 
 
