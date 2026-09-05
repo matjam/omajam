@@ -712,6 +712,14 @@ Panel {
         }
 
         Text {
+          id: previewStatus
+
+          // The client's header does the same: a command the server refused
+          // takes this line while it lasts, in the accent, so a keybind pressed
+          // with no window open still says why nothing happened.
+          readonly property bool showingError: root.connected
+            && root.service.lastError !== ""
+
           visible: text !== ""
           width: parent.width
           text: {
@@ -719,6 +727,7 @@ Panel {
               return root.service && root.service.lastError !== ""
                 ? root.service.lastError
                 : "Waiting for " + (root.service ? root.service.target : "MPD") + "…"
+            if (previewStatus.showingError) return root.service.lastError
             var bits = []
             if (root.service.queueLength > 0 && root.service.queuePosition >= 0)
               bits.push((root.service.queuePosition + 1) + " of " + root.service.queueLength)
@@ -728,7 +737,7 @@ Panel {
             if (root.service.consumeOn) bits.push("consume")
             return bits.join("  ·  ")
           }
-          color: previewCard.dim
+          color: previewStatus.showingError ? Color.accent : previewCard.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap

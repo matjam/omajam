@@ -78,7 +78,24 @@ Item {
   property bool connected: false
   property string serverVersion: ""
   property string target: ""
+
+  // Two things at once, and which one it is depends on `connected`. Offline it
+  // is why -- the server's refusal, or the reason the socket went -- and it
+  // stands until the connection comes back. Online it is the last command the
+  // server would not do, which is a message rather than a state: it goes when
+  // the next command is sent, or when it has been up long enough to read.
   property string lastError: ""
+
+  onLastErrorChanged: if (connected && lastError !== "") errorFade.restart()
+
+  Timer {
+    id: errorFade
+    interval: 6000
+    repeat: false
+    // A disconnection in the meantime has put its own reason here, and that
+    // one is not a message and does not expire.
+    onTriggered: if (root.connected) root.lastError = ""
+  }
 
   property var status: ({})
   property var song: ({})
@@ -341,6 +358,11 @@ Item {
 
   function send(line) {
     if (!bridge.running) return
+    // Every command passes through here, so this is where a stale complaint
+    // goes: whatever the last one was refused for, the user has moved on and
+    // asked for something else. Not while disconnected, where the text is the
+    // reason the widget is showing for being offline.
+    if (connected) lastError = ""
     bridge.write(String(line) + "\n")
   }
 
@@ -564,8 +586,10 @@ Item {
       if (event.target) root.target = String(event.target)
       root.lastError = String(event.error || "")
     } else if (event.event === "ack") {
-      // A rejected command, not a broken connection: the panel shows it and
-      // the next successful command clears it.
+      // A rejected command, not a broken connection. The panel and the bar both
+      // show it while it lasts, which is until the next command is sent or six
+      // seconds go by -- long enough to read, short enough that it does not
+      // become part of the furniture.
       root.lastError = String(event.error || "")
     }
   }

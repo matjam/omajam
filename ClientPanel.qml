@@ -598,16 +598,27 @@ Item {
             }
 
             Text {
+              id: headerStatus
+
+              // A command the server refused says so here, on the line the
+              // clock is on, in the accent so it reads as something that just
+              // happened rather than as more status. It is the same property
+              // the offline reason uses, and the service decides how long it
+              // stays.
+              readonly property bool showingError: root.connected
+                && root.service.lastError !== ""
+
               text: {
                 if (!root.connected) return root.service && root.service.lastError !== ""
                   ? root.service.lastError : "connecting…"
+                if (headerStatus.showingError) return root.service.lastError
                 if (!root.hasSong) return root.service.target
                 var line = root.service.formatTime(root.service.elapsed)
                   + " / " + root.service.formatTime(root.service.duration)
                 if (root.service.bitrate !== "") line += " (" + root.service.bitrate + " kbps)"
                 return line
               }
-              color: root.dim
+              color: headerStatus.showingError ? root.accent : root.dim
               font.family: root.fontFamily
               font.pixelSize: root.fontSizeSmall
               elide: Text.ElideRight
