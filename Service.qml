@@ -116,6 +116,11 @@ Item {
   // actually found a change.
   property int databaseVersion: 0
 
+  // The same, for the stored playlists. Saving into one, renaming it or
+  // deleting a song from it changes a list this plugin may be showing, and MPD
+  // announces all of that on one idle subsystem of its own.
+  property int playlistsVersion: 0
+
   readonly property string bitrate: String(status.bitrate || "")
   readonly property string audioFormat: String(status.audio || "")
 
@@ -408,6 +413,15 @@ Item {
   function removePlaylist(name) { command("rmplaylist", { name: String(name) }) }
   function renamePlaylist(name, to) { command("renameplaylist", { name: String(name), to: String(to) }) }
   function playlistAdd(name, uri) { command("playlistadd", { name: String(name), uri: String(uri) }) }
+  function playlistAddFilter(name, filter) { command("playlistaddfilter", { name: String(name), filter: filter }) }
+  // One position or several. Several travel in one command because each `cmd`
+  // line is run on a thread of its own in the bridge, and two of them race --
+  // which for a list that renumbers itself between deletions is the wrong song.
+  function playlistDelete(name, pos) { command("playlistdelete", { name: String(name), pos: pos }) }
+  // Unlike savePlaylist, which is MPD's `save` and refuses a name it already
+  // has: this one appends to an existing playlist, which is what the client
+  // means by saving to one.
+  function saveQueue(name) { command("savequeue", { name: String(name) }) }
 
   // Full restart rather than a reconnect command: the panel's button is for
   // when something is wrong, and the wider the reset the more it can fix.
@@ -522,6 +536,8 @@ Item {
       root.seedElapsed(Number(root.status.elapsed || 0) || 0)
     } else if (event.event === "database") {
       root.databaseVersion++
+    } else if (event.event === "playlists") {
+      root.playlistsVersion++
     } else if (event.event === "result") {
       root.deliver(event)
     } else if (event.event === "art") {

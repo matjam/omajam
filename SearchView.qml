@@ -105,6 +105,16 @@ Item {
     }
   }
 
+  // What `^s s` would save: the rows it acts on, as files.
+  function playlistTargets() {
+    var rows = resultList.targetRows()
+    var out = []
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].file) out.push({ uri: String(rows[i].file) })
+    }
+    return out
+  }
+
   // --------------------------------------------------------------- layout
 
   Column {

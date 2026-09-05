@@ -83,6 +83,8 @@ These are rmpc's defaults.
 | `/` `n` `N` | find, again, back | `tab` `1`–`9` | switch tab |
 | `J` `K` | move a song in the queue | `C` | jump to what is playing |
 | `X` | shuffle the queue | `i` | the search box |
+| `^s s` | save the rows to a playlist | `^s a` | save the queue to one |
+| `^s c` | save the playing song to one | `^r` | rename a playlist |
 | `?` | the key list | `q` `esc` | close |
 
 Search puts the cursor in the box, so keys type until `esc` returns them to
@@ -94,6 +96,11 @@ Adding an artist or album sends one filter rather than a line per song.
 `A` at the top of a tab is everything the tab lists: the whole library from
 Directories, Artists, Albums or Genre, every stored playlist from Playlists.
 `A` then `x` is everything on random, and so is `omarchy-shell -q mpd playall`.
+
+`^s` asks for a playlist name on the find line. A name that already exists is
+appended to and a new one is created, and an artist or album is saved as a
+filter the same way `a` adds one. In the Playlists tab `d` deletes a whole
+playlist; inside one it removes those songs from it.
 
 Mouse: click to select, double-click to play, click the progress bar to seek,
 click the header glyphs to toggle playback options. The wheel moves ten rows a

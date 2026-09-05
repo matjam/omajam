@@ -57,6 +57,10 @@ Item {
   // What the client's key handler drives.
   readonly property var list: mainList
 
+  // The one line at the bottom of the pane belongs to the client panel, which
+  // owns the keyboard. This says what to ask for; the panel asks it.
+  signal renamePrompt(string name)
+
   // ------------------------------------------------------------ the model
   //
   // Which tags this mode narrows through, in order. Directories and playlists
@@ -216,6 +220,13 @@ Item {
     // the artist list because a file was added elsewhere would be its own bug.
     function onDatabaseVersionChanged() {
       if (root.levels.length > 0) root.reload()
+    }
+
+    // A stored playlist was written to, renamed or removed -- by this pane, by
+    // the queue's save, or by another client entirely. Only the Playlists tab
+    // is showing them, and every level of it is now describing what they were.
+    function onPlaylistsVersionChanged() {
+      if (root.mode === "playlists" && root.levels.length > 0) root.reload()
     }
   }
 
@@ -394,6 +405,39 @@ Item {
     else service.addUri("")
   }
 
+  // What `^s s` would save. A tag value goes as its filter rather than as the
+  // songs behind it, for the same reason `a` sends one: an artist is one
+  // command on the server instead of nine hundred from here. A stored playlist
+  // is skipped -- MPD has no way to pour one into another.
+  function playlistTargets() {
+    var level = currentLevel
+    if (!level) return []
+    var rows = mainList.targetRows()
+    var out = []
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i]
+      var type = String(row.type || "")
+      if (type === "value") {
+        var child = childLevel(level, row)
+        if (child) out.push({ filter: child.filter })
+      } else if (type !== "playlist") {
+        var uri = rowUri(row)
+        if (uri !== "") out.push({ uri: uri })
+      }
+    }
+    return out
+  }
+
+  // `^r`, and only where there is a playlist to rename. One at a time, whatever
+  // is marked: a new name is for the row a person is looking at.
+  function renameSelected() {
+    var level = currentLevel
+    if (!service || !level || level.kind !== "listplaylists") return
+    var row = mainList.currentRow
+    if (!row || String(row.type || "") !== "playlist") return
+    renamePrompt(String(row.playlist || ""))
+  }
+
   function activate() {
     var level = currentLevel
     if (!level || !level.rows || level.rows.length === 0) return
@@ -402,16 +446,31 @@ Item {
     else addSelected(true)
   }
 
+  // Nothing in the library itself can be deleted from here -- `d` is for the
+  // stored playlists, and means the whole playlist at the top level and one
+  // song inside it. Either way the server announces the change and the pane
+  // reloads itself through `playlistsVersion`.
   function deleteSelected() {
-    // Only playlists can be deleted from the browser, and only whole ones.
     var level = currentLevel
-    if (!service || !level || level.kind !== "listplaylists") return
+    if (!service || !level) return
+
+    if (level.kind === "playlist") {
+      // A stored playlist is edited by position, and every deletion renumbers
+      // what is behind it -- so all of them go in one command, which is the
+      // only way to be sure of the order they happen in.
+      var positions = mainList.targetIndexes()
+      if (positions.length > 0) service.playlistDelete(level.path, positions)
+      mainList.clearMarks()
+      return
+    }
+
+    if (level.kind !== "listplaylists") return
     var rows = mainList.targetRows()
     for (var i = 0; i < rows.length; i++) {
       if (String(rows[i].type || "") === "playlist")
         service.removePlaylist(String(rows[i].playlist || ""))
     }
-    Qt.callLater(function() { root.load(0) })
+    mainList.clearMarks()
   }
 
   // Where the client's header shows what you are looking at.

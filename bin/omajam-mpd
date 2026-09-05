@@ -41,6 +41,8 @@ COMMANDS (the "op" key of `cmd`):
     remove {id} | move {from,to} | clear | shuffle | crop
     loadplaylist {name} | saveplaylist {name} | rmplaylist {name}
     renameplaylist {name,to} | playlistadd {name,uri}
+    savequeue {name} | playlistaddfilter {name,filter}
+    playlistdelete {name,pos}   pos is one position or a list of them
 
 QUERIES (the "kind" key of `query`):
     queue                     the play queue, in order
@@ -60,6 +62,7 @@ Output (stdout, one JSON object per line):
     {"event":"art","uri":..,"path":..,"mime":..}
     {"event":"result","id":..,"kind":..,"channel":..,"rows":[..],"error":..}
     {"event":"database"}      the library changed; anything showing it is stale
+    {"event":"playlists"}     a stored playlist was written, renamed or removed
 """
 
 from __future__ import annotations
@@ -105,8 +108,10 @@ SONG_FIELDS = (
 ENTRY_MARKERS = ("file", "directory", "playlist")
 
 # Subsystems worth waking for. `database` and `update` are included so the
-# panel's rescan button shows progress; `message` and `sticker` are not.
-IDLE_SUBSYSTEMS = ["player", "mixer", "options", "playlist", "update", "database"]
+# panel's rescan button shows progress, and `stored_playlist` because the
+# Playlists tab is a view of them; `message` and `sticker` are not.
+IDLE_SUBSYSTEMS = ["player", "mixer", "options", "playlist", "update", "database",
+                   "stored_playlist"]
 
 
 class MPDError(Exception):
@@ -653,16 +658,21 @@ class Bridge:
                     pairs, _ = idle.read_response()
                     if generation != self.generation:
                         break
-                    # MPD names the subsystems that woke us. `database` means
-                    # the library itself changed -- songs added, removed or
-                    # retagged -- which is the one thing a browsing client
-                    # cannot infer from anything else it is told. It fires only
-                    # when a scan actually found something, so a rescan that
-                    # changes nothing costs no refetching.
+                    # MPD names the subsystems that woke us, and two of them are
+                    # things no client can infer from anything else it is told.
+                    # `database` means the library itself changed -- songs
+                    # added, removed or retagged -- and fires only when a scan
+                    # actually found something, so a rescan that changes nothing
+                    # costs no refetching. `stored_playlist` means one of the
+                    # saved playlists was written to, renamed or removed, by
+                    # this client or by another one.
                     for key, value in pairs:
-                        if key.lower() == "changed" and value == "database":
+                        if key.lower() != "changed":
+                            continue
+                        if value == "database":
                             self.emit({"event": "database"})
-                            break
+                        elif value == "stored_playlist":
+                            self.emit({"event": "playlists"})
                     self.refresh()
             except (MPDError, OSError) as exc:
                 reason = error_text(exc) or reason
@@ -862,6 +872,14 @@ class Bridge:
             one("rename", name, str(payload.get("to", "")))
         elif op == "playlistadd" and name and uri:
             one("playlistadd", name, uri)
+        elif op == "savequeue" and name:
+            self.with_cmd(lambda conn: self.save_queue(conn, name))
+        elif op == "playlistaddfilter" and name:
+            self.with_cmd(lambda conn: self.playlist_add_filter(
+                conn, name, payload.get("filter") or []))
+        elif op == "playlistdelete" and name:
+            self.with_cmd(lambda conn: self.playlist_delete(
+                conn, name, payload.get("pos", 0)))
         else:
             return
         self.refresh_soon()
@@ -940,6 +958,64 @@ class Bridge:
             return True
         if then_play:
             conn.command("play", start)
+        return True
+
+    def save_queue(self, conn: MPDConn, name: str) -> bool:
+        """The queue under a name, appending when the name is already taken.
+
+        Appending is what the client means by saving to a playlist that exists,
+        and `save` only grew a mode argument for it in 0.24. An older server is
+        told the long way round -- read the queue back, add it a file at a time
+        -- which is the same playlist for one round trip per song.
+        """
+        if self.queue_length(conn) == 0:
+            self.emit({"event": "ack", "error": "the queue is empty"})
+            return True
+        try:
+            conn.command("save", name)
+            return True
+        except MPDCommandError as exc:
+            # The only refusal worth working around. A permission error or a
+            # name the server will not write belongs to the caller.
+            if "exist" not in str(exc).lower():
+                raise
+        if version_at_least(conn.version, 0, 24):
+            conn.command("save", name, "append")
+            return True
+        for entry in split_entries(conn.command("playlistinfo")[0], markers=("file",)):
+            conn.command("playlistadd", name, entry.get("file", ""))
+        return True
+
+    def playlist_delete(self, conn: MPDConn, name: str, pos) -> bool:
+        """Positions out of a stored playlist, the highest first.
+
+        A deletion renumbers everything behind it, so several of them have to
+        happen in a known order -- and the order is decided here rather than by
+        the caller, because every `cmd` line is answered on a thread of its own
+        and threads racing for the command connection arrive in whatever order
+        they win it. One command is the only thing that can promise an order.
+        """
+        wanted = pos if isinstance(pos, list) else [pos]
+        positions = []
+        for value in wanted:
+            try:
+                positions.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        for position in sorted(set(positions), reverse=True):
+            conn.command("playlistdelete", name, position)
+        return True
+
+    def playlist_add_filter(self, conn: MPDConn, name: str, filters) -> bool:
+        """Everything matching a filter, into a stored playlist.
+
+        The same trade `find_add` makes on the queue: an artist saved as one
+        filter rather than as nine hundred `playlistadd` lines.
+        """
+        args = self.filter_args(conn, filters)
+        if not args:
+            return False
+        conn.command("searchaddpl", name, *args)
         return True
 
     def crop_queue(self, conn: MPDConn) -> bool:

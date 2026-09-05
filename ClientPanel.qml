@@ -177,6 +177,53 @@ Item {
     if (!keep && list) list.moveTo(findOrigin)
     finding = false
     findField.focus = false
+    returnKeyboard()
+  }
+
+  // ============================================================== the prompt
+  //
+  // The find line again, asked a different question: a playlist to save into, a
+  // new name for one. It is the same row and the same field because there is
+  // only ever one thing being typed, and a second line in the same place would
+  // be the same line with a different label anyway.
+  //
+  // `promptHandler` is what to do with the answer. It is set rather than
+  // signalled so that the caller writes the whole exchange in one place --
+  // what to ask, and what the text means when it comes back.
+
+  property bool prompting: false
+  property string promptLabel: ""
+  property string promptHint: ""
+  property var promptHandler: null
+
+  function beginPrompt(label, initial, hint, handler) {
+    // The two share a field, so they cannot share the keyboard.
+    if (finding) endFind(false)
+    promptLabel = String(label || "")
+    promptHint = String(hint || "")
+    promptHandler = handler
+    prompting = true
+    findField.text = String(initial || "")
+    Qt.callLater(function() { findField.forceActiveFocus() })
+  }
+
+  function endPrompt(commit) {
+    var handler = promptHandler
+    var text = String(findField.text || "").trim()
+    // Cleared while `prompting` still holds, so the find line's own handler
+    // stays out of it.
+    findField.text = ""
+    prompting = false
+    promptLabel = ""
+    promptHint = ""
+    promptHandler = null
+    findField.focus = false
+    returnKeyboard()
+    // Nothing typed is a cancellation, whichever key ended it.
+    if (commit && text !== "" && typeof handler === "function") handler(text)
+  }
+
+  function returnKeyboard() {
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
     focusSettle.tries = 0
     focusSettle.restart()
@@ -199,9 +246,10 @@ Item {
     onTriggered: {
       var view = root.pane()
       // Search focuses its own box on arrival, and the find line owns the
-      // keyboard while it is up. Neither is a race worth winning: leave them
-      // alone rather than pulling focus back a tick later.
-      if (!root.open || tries > 10 || root.finding || root.tab === "search"
+      // keyboard while it is up or asking for a name. Neither is a race worth
+      // winning: leave them alone rather than pulling focus back a tick later.
+      if (!root.open || tries > 10 || root.finding || root.prompting
+          || root.tab === "search"
           || (view && view.inputFocused === true) || keyCatcher.activeFocus) {
         stop()
         return
@@ -209,6 +257,63 @@ Item {
       tries++
       keyCatcher.forceActiveFocus()
     }
+  }
+
+  // ====================================================== stored playlists
+  //
+  // rmpc's `^s` and its three suffixes: the rows, the queue, the song. All
+  // three end in `playlistadd` or `save`, and MPD appends to a name that exists
+  // and creates one that does not -- so there is no "already exists" to answer
+  // and no second question to ask.
+
+  readonly property string savePrompt: "playlist name  (enter saves, esc cancels)"
+
+  function saveSelected() {
+    var view = pane()
+    if (!service || !view || typeof view.playlistTargets !== "function") return
+    var targets = view.playlistTargets()
+    if (targets.length === 0) {
+      service.lastError = "nothing selected"
+      return
+    }
+    beginPrompt("save to playlist:", "", savePrompt, function(name) {
+      for (var i = 0; i < targets.length; i++) {
+        if (targets[i].filter) root.service.playlistAddFilter(name, targets[i].filter)
+        else if (targets[i].uri) root.service.playlistAdd(name, targets[i].uri)
+      }
+      var list = root.paneList()
+      if (list) list.clearMarks()
+    })
+  }
+
+  function saveQueue() {
+    if (!service) return
+    beginPrompt("save the queue to:", "", savePrompt, function(name) {
+      root.service.saveQueue(name)
+    })
+  }
+
+  function saveCurrent() {
+    if (!service) return
+    var file = service.songFile
+    if (file === "") {
+      service.lastError = "nothing is playing"
+      return
+    }
+    beginPrompt("save this song to:", "", savePrompt, function(name) {
+      root.service.playlistAdd(name, file)
+    })
+  }
+
+  // `^r`, asked for by whichever pane can answer it -- which is the Playlists
+  // tab, at the level that lists them.
+  function beginRename(name) {
+    var previous = String(name || "")
+    if (!service || previous === "") return
+    beginPrompt("rename to:", previous, "playlist name  (enter renames, esc cancels)",
+                function(text) {
+      if (text !== previous) root.service.renamePlaylist(previous, text)
+    })
   }
 
   // ============================================================== the keys
@@ -227,17 +332,29 @@ Item {
     pendingTimer.restart()
   }
 
-  // The g-prefixed sequences: gg to the top, gt/gT between tabs.
+  // The two-key sequences: g for movement, ^s for saving to a playlist. Both
+  // are rmpc's, and both end on an unknown second key rather than acting on it.
   function handlePending(text) {
     var pending = pendingKey
     pendingKey = ""
     pendingTimer.stop()
-    if (pending !== "g") return false
-    var list = paneList()
-    if (text === "g") { if (list) list.toTop(); return true }
-    if (text === "t") { switchTab(1); return true }
-    if (text === "T") { switchTab(-1); return true }
-    return true  // an unknown second key ends the sequence rather than acting
+
+    if (pending === "g") {
+      var list = paneList()
+      if (text === "g") { if (list) list.toTop(); return true }
+      if (text === "t") { switchTab(1); return true }
+      if (text === "T") { switchTab(-1); return true }
+      return true
+    }
+
+    if (pending === "^s") {
+      if (text === "s") { saveSelected(); return true }
+      if (text === "a") { saveQueue(); return true }
+      if (text === "c") { saveCurrent(); return true }
+      return true
+    }
+
+    return false
   }
 
   function handleKey(event) {
@@ -252,10 +369,11 @@ Item {
 
     // While a text field has the keyboard, only the keys it will not use can
     // mean anything here.
-    var typing = finding || (view && view.inputFocused === true)
+    var typing = finding || prompting || (view && view.inputFocused === true)
 
     if (key === Qt.Key_Escape) {
       if (finding) endFind(false)
+      else if (prompting) endPrompt(false)
       else if (typing) callPane("blurInput")
       else close()
       event.accepted = true
@@ -265,6 +383,14 @@ Item {
     if (finding) {
       if (key === Qt.Key_Return || key === Qt.Key_Enter) {
         endFind(true)
+        event.accepted = true
+      }
+      return  // everything else belongs to the field
+    }
+
+    if (prompting) {
+      if (key === Qt.Key_Return || key === Qt.Key_Enter) {
+        endPrompt(true)
         event.accepted = true
       }
       return  // everything else belongs to the field
@@ -280,7 +406,15 @@ Item {
       return
     }
 
-    if (pendingKey !== "" && text !== "") {
+    // A held Control is never the second half of a sequence -- Qt puts a
+    // control character in `text` for Ctrl+letter, and handing that to
+    // handlePending would read as some unrelated key. It ends the sequence and
+    // then means whatever it usually means, so `g` followed by `^s` starts a
+    // save rather than jumping anywhere.
+    if (ctrl && pendingKey !== "") {
+      pendingKey = ""
+      pendingTimer.stop()
+    } else if (pendingKey !== "" && text !== "") {
       if (handlePending(text)) {
         event.accepted = true
         return
@@ -294,6 +428,8 @@ Item {
       if (key === Qt.Key_B) { if (list) list.pageUp(); event.accepted = true; return }
       if (key === Qt.Key_Space) { if (list) list.invertMarks(); event.accepted = true; return }
       if (key === Qt.Key_C) { close(); event.accepted = true; return }
+      if (key === Qt.Key_S) { armPending("^s"); event.accepted = true; return }
+      if (key === Qt.Key_R) { callPane("renameSelected"); event.accepted = true; return }
       return
     }
 
@@ -391,6 +527,10 @@ Item {
   onOpenChanged: {
     if (!open) {
       finding = false
+      prompting = false
+      promptLabel = ""
+      promptHint = ""
+      promptHandler = null
       helpShown = false
       pendingKey = ""
       return
@@ -683,7 +823,7 @@ Item {
           id: paneArea
           anchors.fill: parent
           anchors.margins: Style.space(8)
-          anchors.bottomMargin: root.finding ? Style.space(8) + findRow.height : Style.space(8)
+          anchors.bottomMargin: findRow.visible ? Style.space(8) + findRow.height : Style.space(8)
 
           QueueView {
             id: queueView
@@ -780,6 +920,9 @@ Item {
             foreground: root.fg
             accent: root.accent
 
+            // The only pane that can ask: renameSelected refuses anywhere but
+            // the list of stored playlists, which is this tab's root level.
+            onRenamePrompt: function(name) { root.beginRename(name) }
           }
 
           SettingsView {
@@ -811,18 +954,20 @@ Item {
           }
         }
 
-        // `/` -- jump to a row by what it says, in whichever list is showing.
+        // `/` -- jump to a row by what it says, in whichever list is showing --
+        // and the same line asking for a playlist name.
         Row {
           id: findRow
-          visible: root.finding
+          visible: root.finding || root.prompting
           anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
           anchors.margins: Style.space(8)
           height: visible ? Math.round(root.fontSizeBody * 2.2) : 0
           spacing: Style.space(6)
 
           Text {
+            id: findGlyph
             anchors.verticalCenter: parent.verticalCenter
-            text: "/"
+            text: root.prompting ? root.promptLabel : "/"
             color: root.accent
             font.family: root.fontFamily
             font.pixelSize: root.fontSizeBody
@@ -830,10 +975,14 @@ Item {
 
           TextField {
             id: findField
-            width: parent.width - Style.space(24)
+            width: parent.width - findGlyph.width - Style.space(20)
             foreground: root.fg
-            placeholderText: "jump to…  (enter keeps it, esc goes back)"
+            placeholderText: root.prompting ? root.promptHint
+                                            : "jump to…  (enter keeps it, esc goes back)"
             onTextChanged: {
+              // A name being typed is nobody's business but the prompt's: the
+              // list underneath should not walk while it is.
+              if (root.prompting) return
               root.findTerm = text
               var list = root.paneList()
               if (!list || text === "") return
@@ -878,6 +1027,8 @@ Item {
                 "/ n N", "find, again, back", "tab 1-9", "switch tab",
                 "J K", "move in queue", "C", "jump to playing",
                 "X", "shuffle queue", "i", "search box",
+                "^s s", "save the rows", "^s a", "save the queue",
+                "^s c", "save the song", "^r", "rename a playlist",
                 "?", "this", "q esc", "close"
               ]
 

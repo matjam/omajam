@@ -191,6 +191,19 @@ Item {
     return out
   }
 
+  // The same rows, as positions. A stored playlist is edited by position rather
+  // than by name -- two copies of a song in one are two rows, and only one of
+  // them is being deleted -- so the caller needs the numbers.
+  function targetIndexes() {
+    if (markedCount === 0)
+      return currentIndex >= 0 && currentIndex < count ? [currentIndex] : []
+    var out = []
+    for (var i = 0; i < count; i++) {
+      if (marked[i]) out.push(i)
+    }
+    return out
+  }
+
   // Marks are indexes, and every index means something else once the rows
   // change underneath them.
   //
