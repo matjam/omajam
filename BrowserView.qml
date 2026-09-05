@@ -456,8 +456,9 @@ Item {
 
     if (level.kind === "playlist") {
       // A stored playlist is edited by position, and every deletion renumbers
-      // what is behind it -- so all of them go in one command, which is the
-      // only way to be sure of the order they happen in.
+      // what is behind it -- so they go in one command and the bridge works
+      // from the end back, rather than each carrying a position that the
+      // deletion before it has already moved.
       var positions = mainList.targetIndexes()
       if (positions.length > 0) service.playlistDelete(level.path, positions)
       mainList.clearMarks()

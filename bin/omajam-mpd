@@ -70,6 +70,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import queue
 import re
 import socket
 import sys
@@ -525,6 +526,10 @@ class Bridge:
         self.query_cv = threading.Condition()
         self.query_pending = []
 
+        # Mutations wait their turn rather than racing for the command
+        # connection; see mutation_worker.
+        self.mutations = queue.Queue()
+
         self.refresh_lock = threading.Lock()
         self.refreshing = False
         self.refresh_again = False
@@ -819,6 +824,31 @@ class Bridge:
     # run on the command connection like the transport buttons do -- they are
     # all single round trips, and ordering against a play/pause matters more
     # than the microsecond of contention.
+    #
+    # They run one at a time, in the order the shell sent them, on the worker
+    # below. Order is the whole point of a queue: `a` on nine marked rows is
+    # nine `add` lines, and the ninth is meant to end up ninth.
+
+    def submit_mutation(self, payload: dict) -> None:
+        self.mutations.put(payload)
+
+    def mutation_worker(self) -> None:
+        """Run mutations in the order they arrived, one at a time.
+
+        Unlike a query, every one of these has to happen, so nothing here is
+        dropped or coalesced. They cannot run on the stdin thread, which has to
+        stay free to read the next line -- a mutation waits on the command lock,
+        and a transport button queued behind a blocked one would look like a
+        dead widget. Nor can they have a thread apiece, which is what this
+        replaced: threads racing for the command connection arrive in whatever
+        order they win it, and a queue built out of order is the wrong queue.
+        """
+        while not self.stop.is_set():
+            try:
+                payload = self.mutations.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            self.mutate(payload)
 
     def mutate(self, payload: dict) -> None:
         op = str(payload.get("op", ""))
@@ -989,11 +1019,10 @@ class Bridge:
     def playlist_delete(self, conn: MPDConn, name: str, pos) -> bool:
         """Positions out of a stored playlist, the highest first.
 
-        A deletion renumbers everything behind it, so several of them have to
-        happen in a known order -- and the order is decided here rather than by
-        the caller, because every `cmd` line is answered on a thread of its own
-        and threads racing for the command connection arrive in whatever order
-        they win it. One command is the only thing that can promise an order.
+        Deleting by position renumbers everything behind it, so several
+        deletions are only the ones asked for if they happen from the end back.
+        That is this function's business rather than the caller's: it takes the
+        positions as they were read off the list and puts them in order itself.
         """
         wanted = pos if isinstance(pos, list) else [pos]
         positions = []
@@ -1391,10 +1420,7 @@ class Bridge:
             except ValueError:
                 return
             if isinstance(payload, dict):
-                # Off the stdin thread: a mutation waits on the command lock,
-                # and a transport button queued behind a blocked one would look
-                # like a dead widget.
-                threading.Thread(target=self.mutate, args=(payload,), daemon=True).start()
+                self.submit_mutation(payload)
         elif verb == "query":
             try:
                 payload = json.loads(rest or "{}")
@@ -1406,6 +1432,7 @@ class Bridge:
     def run(self) -> int:
         threading.Thread(target=self.manager, daemon=True).start()
         threading.Thread(target=self.query_worker, daemon=True).start()
+        threading.Thread(target=self.mutation_worker, daemon=True).start()
         try:
             while not self.stop.is_set():
                 line = sys.stdin.readline()

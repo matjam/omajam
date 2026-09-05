@@ -414,9 +414,9 @@ Item {
   function renamePlaylist(name, to) { command("renameplaylist", { name: String(name), to: String(to) }) }
   function playlistAdd(name, uri) { command("playlistadd", { name: String(name), uri: String(uri) }) }
   function playlistAddFilter(name, filter) { command("playlistaddfilter", { name: String(name), filter: filter }) }
-  // One position or several. Several travel in one command because each `cmd`
-  // line is run on a thread of its own in the bridge, and two of them race --
-  // which for a list that renumbers itself between deletions is the wrong song.
+  // One position or several. Deleting by position renumbers everything behind
+  // it, so several travel together and the bridge works from the end back;
+  // sent one at a time they would be positions that had already moved.
   function playlistDelete(name, pos) { command("playlistdelete", { name: String(name), pos: pos }) }
   // Unlike savePlaylist, which is MPD's `save` and refuses a name it already
   // has: this one appends to an existing playlist, which is what the client
