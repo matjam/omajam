@@ -96,6 +96,20 @@ REFRESH_MIN_GAP = 0.1
 # hand the shell a hundred megabytes of JSON on one line.
 QUERY_ROW_LIMIT = 20000
 
+# How much of an answer to ask for at a time.
+#
+# MPD's own output buffer is finite -- max_output_buffer_size, 8192 KiB by
+# default -- and a reply that does not fit in it is not truncated, it is fatal:
+# the server writes
+#
+#     client: [pid=... uid=...] error: Output buffer is full
+#
+# to its log, closes the connection, and every row of the answer is lost. Ten
+# thousand songs of `playlistinfo` is past that ceiling, which is an ordinary
+# record collection rather than a pathological one -- so every answer that grows
+# with the library is read a window at a time instead.
+QUERY_PAGE = 1000
+
 # What travels with a song. MPD volunteers more than this -- Added, sticker
 # counts, the audio format -- and every field costs bytes on a line that can
 # carry ten thousand of them.
@@ -1012,7 +1026,11 @@ class Bridge:
         if version_at_least(conn.version, 0, 24):
             conn.command("save", name, "append")
             return True
-        for entry in split_entries(conn.command("playlistinfo")[0], markers=("file",)):
+        # Paged like every other read of the queue: this one runs on the oldest
+        # servers, which are the likeliest to have a small output buffer.
+        for entry in self.paged(conn, None, lambda start, end:
+                                conn.command("playlistinfo",
+                                             "%d:%d" % (start, end))[0]):
             conn.command("playlistadd", name, entry.get("file", ""))
         return True
 
@@ -1192,6 +1210,28 @@ class Bridge:
             flat.extend([tag, value])
         return flat
 
+    def paged(self, conn: MPDConn, limit, fetch) -> list:
+        """Collect a list of songs a window at a time.
+
+        `fetch(start, end)` runs one page and hands back its raw pairs; every
+        MPD command that can answer with the whole library takes a `START:END`
+        window for exactly this. Paging stops at `limit` -- which is the pane's
+        own ceiling, so `truncated` still means what it meant -- or when a page
+        comes back short, which is the server saying there was nothing after it.
+        A `limit` of None reads until it runs out.
+        """
+        rows = []
+        start = 0
+        while limit is None or start < limit:
+            size = QUERY_PAGE if limit is None else min(QUERY_PAGE, limit - start)
+            page = split_entries(fetch(start, start + size), markers=("file",),
+                                 fields=SONG_FIELDS, limit=size)
+            rows.extend(page)
+            if len(page) < size:
+                break
+            start += size
+        return rows
+
     def execute_query(self, conn: MPDConn, kind: str, request: dict) -> list:
         # `search a` on a ten thousand song library is a real thing to type, and
         # its answer is four megabytes of JSON on one line. The pane asking says
@@ -1203,8 +1243,8 @@ class Bridge:
         limit = max(1, min(QUERY_ROW_LIMIT, limit))
 
         if kind == "queue":
-            return split_entries(conn.command("playlistinfo")[0],
-                                 markers=("file",), fields=SONG_FIELDS, limit=limit)
+            return self.paged(conn, limit, lambda start, end:
+                              conn.command("playlistinfo", "%d:%d" % (start, end))[0])
 
         if kind == "lsinfo":
             rows = split_entries(conn.command("lsinfo", request.get("path", ""))[0],
@@ -1229,8 +1269,11 @@ class Bridge:
             args = self.filter_args(conn, request.get("filter") or [])
             if not args:
                 return []
-            rows = split_entries(conn.command("find", *args)[0],
-                                 markers=("file",), fields=SONG_FIELDS, limit=limit)
+            # `window` has to be the last arguments, so it is appended per page
+            # rather than being part of `args`. A genre can be thousands of
+            # songs, which is as much of an answer as the whole queue.
+            rows = self.paged(conn, limit, lambda start, end: conn.command(
+                "find", *(args + ["window", "%d:%d" % (start, end)]))[0])
             if request.get("sort") == "track":
                 rows.sort(key=lambda r: (number(r.get("disc")), number(r.get("track")),
                                          r.get("file", "")))
@@ -1244,8 +1287,8 @@ class Bridge:
                 args = ["(any contains '%s')" % quote_filter_value(term)]
             else:
                 args = ["any", term]
-            return split_entries(conn.command("search", *args)[0],
-                                 markers=("file",), fields=SONG_FIELDS, limit=limit)
+            return self.paged(conn, limit, lambda start, end: conn.command(
+                "search", *(args + ["window", "%d:%d" % (start, end)]))[0])
 
         if kind == "songinfo":
             # One song, every tag it has. The browsing queries whitelist fields
@@ -1293,6 +1336,12 @@ class Bridge:
             name = str(request.get("name", ""))
             if not name:
                 return []
+            if version_at_least(conn.version, 0, 24):
+                return self.paged(conn, limit, lambda start, end: conn.command(
+                    "listplaylistinfo", name, "%d:%d" % (start, end))[0])
+            # Ranges arrived in 0.24. An older server has to send the lot, and a
+            # stored playlist long enough to overflow its buffer cannot be read
+            # at all -- there is no other spelling of this question.
             return split_entries(conn.command("listplaylistinfo", name)[0],
                                  markers=("file",), fields=SONG_FIELDS, limit=limit)
 
