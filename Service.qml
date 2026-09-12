@@ -27,14 +27,29 @@ Item {
   property var manifest: null
 
   readonly property string pluginId: (manifest && manifest.id) || "matjam.omajam"
-  readonly property string sourceDir: (manifest && manifest.__sourceDir) ? String(manifest.__sourceDir) : ""
+
+  // Omarchy 4.0.3 stops handing third-party plugin code manifest.__sourceDir
+  // (sandboxing: publicPluginManifest strips it before a service or bar
+  // widget ever sees the manifest), so that used to work here no longer does
+  // -- silently, since a missing sourceDir just leaves bridgePath empty and
+  // the bridge is never started, with nothing to log. Deriving it from where
+  // this file itself was loaded from needs no cooperation from the shell.
+  // Other community plugins hit the same wall after that update and use the
+  // same trick to find their own bundled files.
+  readonly property string sourceDir: Qt.resolvedUrl(".").toString().replace("file://", "").replace(/\/$/, "")
 
   // ------------------------------------------------------------- settings
   //
   // Read out of the bar layout entry the widget writes through setBarWidget,
   // exactly as the widget reads them, so a saved change reaches the connection
   // without a shell restart.
-  readonly property var settings: lookupSettings(shell ? shell.shellConfig : null, pluginId)
+  //
+  // Omarchy 4.0.3 stopped injecting the real shell into third-party plugin
+  // code at all: `shell` here is now a capability-scoped proxy (PluginShellApi)
+  // that exposes only `barConfig` -- the shell.json `bar` section, kept live --
+  // not the `shellConfig` this used to read. lookupSettings still wants a
+  // `{bar: {...}}`-shaped object, so wrap it back into one.
+  readonly property var settings: lookupSettings(shell ? { bar: shell.barConfig } : null, pluginId)
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
