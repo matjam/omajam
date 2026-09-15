@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/matjam/omajam/compare/v1.2.0...v1.2.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* restore MPD connection with scoped shell APIs ([92248d4](https://github.com/matjam/omajam/commit/92248d42f7e1ec54d04d8a5c947c7f3bb3b7a290))
+
 ## [1.2.0](https://github.com/matjam/omajam/compare/v1.1.1...v1.2.0) (2026-09-05)
 
 
