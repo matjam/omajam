@@ -44,6 +44,9 @@ jobs:
       - name: Marketplace listing checks
         run: ./.github/scripts/marketplace-check.sh
 
+      - name: Scoped shell compatibility tests
+        run: node --test tests/*.test.mjs
+
       # A pin that is never revisited silently stops testing what Omarchy
       # actually enforces today. Downloaded to hash, never executed, so this
       # stays a warning rather than a reason to distrust the run.

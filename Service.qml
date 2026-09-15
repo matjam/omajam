@@ -27,39 +27,25 @@ Item {
   property var manifest: null
 
   readonly property string pluginId: (manifest && manifest.id) || "matjam.omajam"
-  readonly property string sourceDir: (manifest && manifest.__sourceDir) ? String(manifest.__sourceDir) : ""
+  LocalPath { id: localPath }
 
   // ------------------------------------------------------------- settings
   //
   // Read out of the bar layout entry the widget writes through setBarWidget,
   // exactly as the widget reads them, so a saved change reaches the connection
   // without a shell restart.
-  readonly property var settings: lookupSettings(shell ? shell.shellConfig : null, pluginId)
+  readonly property var settings: shellSettings.settings
+
+  ShellSettings {
+    id: shellSettings
+    pluginId: root.pluginId
+  }
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
     return value === undefined || value === null ? fallback : value
   }
 
-  function lookupSettings(config, id) {
-    if (!config || !id) return ({})
-    var sections = ["left", "center", "right"]
-    if (config.bar && config.bar.layout) {
-      for (var s = 0; s < sections.length; s++) {
-        var list = config.bar.layout[sections[s]]
-        if (!Array.isArray(list)) continue
-        for (var i = 0; i < list.length; i++) {
-          if (list[i] && String(list[i].id) === id) return list[i]
-        }
-      }
-    }
-    if (Array.isArray(config.plugins)) {
-      for (var j = 0; j < config.plugins.length; j++) {
-        if (config.plugins[j] && String(config.plugins[j].id) === id) return config.plugins[j]
-      }
-    }
-    return ({})
-  }
 
   readonly property string host: String(setting("host", "")).trim()
   readonly property int port: Math.max(0, Number(setting("port", 6600)) || 0)
@@ -602,17 +588,14 @@ Item {
     }
   }
 
-  // Where the bridge lives. Empty until the shell has injected the manifest,
-  // which is why nothing below starts on a binding.
-  readonly property string bridgePath: sourceDir === "" ? "" : sourceDir + "/bin/omajam-mpd"
+  // Public manifests omit private source paths. Resolve our bundled helper
+  // relative to this QML file, including percent-encoded path characters.
+  readonly property string bridgePath: localPath.fromUrl(Qt.resolvedUrl("bin/omajam-mpd"))
 
   onBridgePathChanged: Qt.callLater(syncBridge)
   Component.onCompleted: Qt.callLater(syncBridge)
 
-  // `running` is set here rather than bound, and after the bindings have
-  // settled. Bound, it could go true in the same pass that `command` was still
-  // the empty-sourceDir spelling of the path, and the shell would spawn
-  // python3 on /bin/omajam-mpd -- which is nowhere.
+  // Start after the command binding has settled.
   function syncBridge() {
     bridge.running = bridgePath !== ""
   }

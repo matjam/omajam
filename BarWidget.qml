@@ -76,12 +76,12 @@ Panel {
     return service.stateIcon
   }
 
-  readonly property string version: {
-    try {
-      return String(bar.shell.pluginRegistry.installedPlugins[moduleName].version || "")
-    } catch (e) {
-      return ""
-    }
+  readonly property string version: serviceVersion.version
+
+  ServiceVersion {
+    id: serviceVersion
+    shell: bar ? bar.shell : null
+    moduleName: root.moduleName
   }
 
   visible: !(idle && whenIdle === "hide") || clientOpen
